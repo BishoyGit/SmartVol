@@ -1,6 +1,7 @@
 """
 Per-application + global volume control with an on-screen overlay.
 
+Hold RIGHT CTRL and press:
 - Up / Down arrows    -> raise / lower the volume of whichever app
                          currently has focus (the foreground window).
 - Left / Right arrows -> raise / lower the global (system/master)
@@ -19,14 +20,11 @@ RUN:
     python app_volume_overlay.py
 
 NOTES / CAVEATS:
-- This script GLOBALLY captures all four arrow keys (with
-  suppress=True), meaning their normal behavior (scrolling, cursor
-  movement, game controls, etc.) will stop working system-wide while
-  this script runs. If you don't want that, change the HOTKEY_* values
-  below to something like "ctrl+up" / "ctrl+down" / "ctrl+left" / "ctrl+right".
+- Because these are Right Ctrl + arrow combos, plain arrow keys keep
+  working normally everywhere else — only the combo is intercepted.
 - Apps running as Administrator (e.g. some games) may not be
   reachable by the keyboard hook unless you also run this script as
-  Administrator.
+  Administrator too.
 - Not every foreground window has an audio session (e.g. it hasn't
   played sound yet, or it's a system window) — the overlay will say
   "No audio session" in that case.
@@ -35,8 +33,6 @@ NOTES / CAVEATS:
 """
 
 import queue
-import threading
-import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -52,13 +48,13 @@ from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 from comtypes import CLSCTX_ALL
 
 # ----------------------------- CONFIG -------------------------------
-STEP = 0.05                 # volume change per key press (5%)
-HOTKEY_UP = "up"            # per-app volume up   (change to "ctrl+up" etc. if desired)
-HOTKEY_DOWN = "down"        # per-app volume down
-HOTKEY_LEFT = "left"        # global/system volume down
-HOTKEY_RIGHT = "right"      # global/system volume up
-SUPPRESS_KEYS = True         # block the normal OS action for these keys
-OVERLAY_DURATION_MS = 1300   # how long the overlay stays visible
+STEP = 0.05                  # volume change per key press (5%)
+HOTKEY_UP = "right ctrl+up"        # per-app volume up
+HOTKEY_DOWN = "right ctrl+down"    # per-app volume down
+HOTKEY_LEFT = "right ctrl+left"    # global/system volume down
+HOTKEY_RIGHT = "right ctrl+right"  # global/system volume up
+SUPPRESS_KEYS = True          # block the normal OS action for these combos
+OVERLAY_DURATION_MS = 1300    # how long the overlay stays visible
 OVERLAY_WIDTH = 340
 OVERLAY_HEIGHT = 100
 OVERLAY_OPACITY = 0.92
