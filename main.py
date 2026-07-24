@@ -10,14 +10,16 @@ Hold RIGHT CTRL and press:
 An overlay pops up showing the app's icon, name, and current volume
 level (or "System Volume" for the global control).
 
+A system tray icon provides device switching and settings.
+
 --------------------------------------------------------------------
 INSTALL (run once, in an elevated or normal cmd/PowerShell):
 
-    pip install pycaw comtypes psutil keyboard pywin32 pillow
+    pip install pycaw comtypes psutil keyboard pywin32 pillow pystray
 
 RUN:
 
-    python app_volume_overlay.py
+    python main.py
 
 NOTES / CAVEATS:
 - Because these are Right Ctrl + arrow combos, plain arrow keys keep
@@ -32,20 +34,33 @@ NOTES / CAVEATS:
 --------------------------------------------------------------------
 """
 
+import json
+import os
 import queue
+import sys
+import threading
 import tkinter as tk
 from tkinter import ttk
+from ctypes import c_ulong, c_wchar_p
 
+import comtypes
+import comtypes.client
 import keyboard
 import psutil
+import pystray
 import win32api
 import win32con
 import win32gui
 import win32process
 import win32ui
-from PIL import Image, ImageTk
-from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-from comtypes import CLSCTX_ALL
+from PIL import Image, ImageDraw, ImageTk
+from pycaw.pycaw import (
+    AudioUtilities,
+    IAudioEndpointVolume,
+    IMMDeviceEnumerator,
+)
+from pycaw.constants import EDataFlow, DEVICE_STATE
+from comtypes import CLSCTX_ALL, COMMETHOD, GUID, HRESULT, IUnknown
 
 # ----------------------------- CONFIG -------------------------------
 STEP = 0.05                  # volume change per key press (5%)
@@ -65,7 +80,72 @@ event_queue = queue.Queue()
 _icon_cache = {}
 
 
-# ----------------------- Windows helper functions ---------------------
+# ----------------------- Config management ---------------------------
+
+def _config_path():
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "settings.json")
+
+
+def load_config():
+    path = _config_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"hidden_devices": []}
+
+
+def save_config(cfg):
+    path = _config_path()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception:
+        pass
+
+
+# ----------------------- IPolicyConfig COM ---------------------------
+
+class IPolicyConfig(IUnknown):
+    _iid_ = GUID("{F8679F50-850A-41CF-9C72-430F290290C8}")
+    _methods_ = (
+        COMMETHOD([], HRESULT, "GetMixFormat"),
+        COMMETHOD([], HRESULT, "Initialize"),
+        COMMETHOD([], HRESULT, "GetDeviceFormat"),
+        COMMETHOD([], HRESULT, "ResetDeviceFormat"),
+        COMMETHOD([], HRESULT, "SetDeviceFormat"),
+        COMMETHOD([], HRESULT, "GetProcessingPeriod"),
+        COMMETHOD([], HRESULT, "SetProcessingPeriod"),
+        COMMETHOD([], HRESULT, "GetShareMode"),
+        COMMETHOD([], HRESULT, "SetShareMode"),
+        COMMETHOD([], HRESULT, "GetCurrentCertificate"),
+        COMMETHOD(
+            [], HRESULT, "SetDefaultEndpoint",
+            (["in"], c_wchar_p, "pwstrID"),
+            (["in"], c_ulong, "dwRole"),
+        ),
+        COMMETHOD([], HRESULT, "SetEndpointVisibility"),
+    )
+
+
+CLSID_PolicyConfigClient = GUID("{870AF99C-171D-4F9E-AF0D-E63Df40c2BC9}")
+
+
+def _get_policy_config():
+    return comtypes.CoCreateInstance(
+        CLSID_PolicyConfigClient,
+        IPolicyConfig,
+        comtypes.CLSCTX_INPROC_SERVER,
+    )
+
+
+# ----------------------- Audio helpers -------------------------------
 
 def get_foreground_pid_and_title():
     hwnd = win32gui.GetForegroundWindow()
@@ -94,18 +174,13 @@ def get_exe_path(pid):
 
 
 def find_audio_session(pid, proc_name):
-    """Find the audio session matching this pid, falling back to
-    matching by process name (covers apps like browsers where the
-    audio-producing subprocess differs from the focused window's pid)."""
     sessions = AudioUtilities.GetAllSessions()
 
-    # Pass 1: exact pid match
     for session in sessions:
         proc = session.Process
         if proc and proc.pid == pid:
             return session
 
-    # Pass 2: same executable name, any pid
     if proc_name:
         for session in sessions:
             proc = session.Process
@@ -119,15 +194,12 @@ def find_audio_session(pid, proc_name):
 
 
 def get_master_volume_interface():
-    """Return an IAudioEndpointVolume interface for the default output
-    device, used to control the global/system volume."""
     devices = AudioUtilities.GetSpeakers()
     interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
     return interface.QueryInterface(IAudioEndpointVolume)
 
 
 def get_icon_image(exe_path, size=ICON_SIZE):
-    """Extract an app's .exe icon as a PIL Image (RGBA)."""
     if not exe_path:
         return None
     if exe_path in _icon_cache:
@@ -162,7 +234,6 @@ def get_icon_image(exe_path, size=ICON_SIZE):
             )
             img = raw.resize((size, size), Image.LANCZOS)
 
-        # cleanup handles
         for h in (large or []):
             win32gui.DestroyIcon(h)
         for h in (small or []):
@@ -171,6 +242,53 @@ def get_icon_image(exe_path, size=ICON_SIZE):
         img = None
 
     _icon_cache[exe_path] = img
+    return img
+
+
+# ----------------------- Audio device enumeration/switching ----------
+
+def get_active_output_devices():
+    """Return list of (device_id, friendly_name) for all active render endpoints."""
+    deviceEnumerator = comtypes.CoCreateInstance(
+        GUID("{BCDE0395-E52F-467C-8E3D-C4579291692E}"),
+        IMMDeviceEnumerator,
+        comtypes.CLSCTX_INPROC_SERVER,
+    )
+    collection = deviceEnumerator.EnumAudioEndpoints(
+        EDataFlow.eRender.value, DEVICE_STATE.ACTIVE.value
+    )
+    count = collection.GetCount()
+    result = []
+    for i in range(count):
+        dev = collection.Item(i)
+        ad = AudioUtilities.CreateDevice(dev)
+        result.append((ad.id, ad.FriendlyName))
+    return result
+
+
+def get_default_device_id():
+    return AudioUtilities.GetSpeakers().GetId()
+
+
+def set_default_device(device_id):
+    policy = _get_policy_config()
+    policy.SetDefaultEndpoint(device_id, 0)
+
+
+def generate_tray_image():
+    """Create a simple speaker icon for the tray."""
+    size = 64
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # Speaker body
+    draw.rectangle([18, 24, 30, 40], fill="white")
+    # Speaker cone
+    draw.polygon([(30, 18), (48, 8), (48, 56), (30, 46)], fill="white")
+    # Sound waves
+    draw.arc([40, 14, 56, 50], start=315, end=45, fill="white", width=3)
+    draw.arc([46, 8, 64, 56], start=315, end=45, fill="white", width=3)
+
     return img
 
 
@@ -222,7 +340,7 @@ class Overlay:
         )
         self.progress.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
 
-        self._tk_icon_ref = None  # keep a reference so it isn't GC'd
+        self._tk_icon_ref = None
 
     def _place_window(self):
         screen_w = self.win.winfo_screenwidth()
@@ -255,6 +373,104 @@ class Overlay:
         if self.hide_job is not None:
             self.root.after_cancel(self.hide_job)
         self.hide_job = self.root.after(OVERLAY_DURATION_MS, self.win.withdraw)
+
+
+# --------------------------- Settings window --------------------------
+
+class SettingsWindow:
+    def __init__(self, root, config, on_save):
+        self.root = root
+        self.config = config
+        self.on_save = on_save
+        self.win = None
+        self.vars = {}
+
+    def open(self):
+        if self.win is not None:
+            self.win.lift()
+            return
+
+        self.win = tk.Toplevel(self.root)
+        self.win.title("SmartVol Settings")
+        self.win.geometry("420x340")
+        self.win.resizable(False, False)
+        self.win.configure(bg="#2d2d2d")
+        self.win.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        header = tk.Label(
+            self.win, text="Hidden Audio Devices",
+            fg="white", bg="#2d2d2d", font=("Segoe UI", 12, "bold"),
+        )
+        header.pack(pady=(14, 4))
+
+        subtitle = tk.Label(
+            self.win,
+            text="Uncheck devices to hide them from the tray menu.",
+            fg="#aaaaaa", bg="#2d2d2d", font=("Segoe UI", 9),
+        )
+        subtitle.pack(pady=(0, 8))
+
+        container = tk.Frame(self.win, bg="#2d2d2d")
+        container.pack(fill="both", expand=True, padx=14, pady=(0, 4))
+
+        canvas = tk.Canvas(container, bg="#2d2d2d", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg="#2d2d2d")
+
+        inner.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        self.vars.clear()
+        devices = get_active_output_devices()
+        hidden = set(self.config.get("hidden_devices", []))
+
+        for dev_id, dev_name in devices:
+            visible = tk.BooleanVar(value=(dev_id not in hidden))
+            self.vars[dev_id] = visible
+            cb = tk.Checkbutton(
+                inner, text=dev_name, variable=visible,
+                fg="white", bg="#2d2d2d", selectcolor="#444444",
+                activebackground="#2d2d2d", activeforeground="white",
+                font=("Segoe UI", 10), anchor="w", pady=3,
+            )
+            cb.pack(fill="x")
+
+        btn_frame = tk.Frame(self.win, bg="#2d2d2d")
+        btn_frame.pack(fill="x", padx=14, pady=(4, 14))
+
+        save_btn = tk.Button(
+            btn_frame, text="Save", command=self._on_save,
+            bg="#4caf50", fg="white", font=("Segoe UI", 10, "bold"),
+            relief="flat", padx=20, pady=4, cursor="hand2",
+        )
+        save_btn.pack(side="right", padx=(8, 0))
+
+        cancel_btn = tk.Button(
+            btn_frame, text="Cancel", command=self._on_close,
+            bg="#555555", fg="white", font=("Segoe UI", 10),
+            relief="flat", padx=20, pady=4, cursor="hand2",
+        )
+        cancel_btn.pack(side="right")
+
+    def _on_save(self):
+        hidden = [dev_id for dev_id, var in self.vars.items() if not var.get()]
+        self.config["hidden_devices"] = hidden
+        save_config(self.config)
+        if self.on_save:
+            self.on_save()
+        self._on_close()
+
+    def _on_close(self):
+        if self.win is not None:
+            self.win.destroy()
+            self.win = None
 
 
 # --------------------------- Core logic --------------------------------
@@ -307,11 +523,104 @@ def poll_queue(root, overlay):
     root.after(30, poll_queue, root, overlay)
 
 
+# --------------------------- Tray icon ---------------------------------
+
+class TrayManager:
+    def __init__(self, root, overlay):
+        self.root = root
+        self.overlay = overlay
+        self.config = load_config()
+        self.settings_win = SettingsWindow(root, self.config, self._on_settings_saved)
+        self.icon = None
+        self._icon_thread = None
+
+    def start(self):
+        self.icon = pystray.Icon(
+            "SmartVol",
+            icon=generate_tray_image(),
+            title="SmartVol",
+            menu=self._build_menu(),
+        )
+        self._icon_thread = threading.Thread(
+            target=self.icon.run, daemon=True,
+        )
+        self._icon_thread.start()
+
+    def _build_menu(self):
+        devices = get_active_output_devices()
+        default_id = get_default_device_id()
+        hidden = set(self.config.get("hidden_devices", []))
+
+        visible_devices = [
+            (did, name) for did, name in devices if did not in hidden
+        ]
+
+        device_items = []
+        for dev_id, dev_name in visible_devices:
+            is_default = (dev_id == default_id)
+            prefix = "\u2713 " if is_default else "   "
+
+            def _make_switch(did=dev_id):
+                def _switch(icon, item):
+                    try:
+                        set_default_device(did)
+                        self._refresh_menu()
+                    except Exception:
+                        pass
+                return _switch
+
+            device_items.append(
+                pystray.MenuItem(
+                    prefix + dev_name,
+                    _make_switch(),
+                    radio=True,
+                    default=is_default,
+                )
+            )
+
+        if not device_items:
+            device_items.append(
+                pystray.MenuItem("  (no devices found)", None, enabled=False)
+            )
+
+        menu = pystray.Menu(
+            *device_items,
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Settings", self._on_settings),
+            pystray.MenuItem("Exit", self._on_exit),
+        )
+        return menu
+
+    def _refresh_menu(self):
+        if self.icon is not None:
+            self.icon.menu = self._build_menu()
+            self.icon.update_menu()
+
+    def _on_settings(self, icon, item):
+        self.root.after(0, self.settings_win.open)
+
+    def _on_settings_saved(self):
+        self._refresh_menu()
+
+    def _on_exit(self, icon, item):
+        icon.stop()
+        self.root.after(0, self.root.destroy)
+
+    def stop(self):
+        if self.icon is not None:
+            self.icon.stop()
+
+
+# --------------------------- Main --------------------------------------
+
 def main():
     root = tk.Tk()
-    root.withdraw()  # hide the default root window
+    root.withdraw()
 
     overlay = Overlay(root)
+
+    tray = TrayManager(root, overlay)
+    tray.start()
 
     keyboard.add_hotkey(
         HOTKEY_UP, lambda: event_queue.put(("app", 1)), suppress=SUPPRESS_KEYS
