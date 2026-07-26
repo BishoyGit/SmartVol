@@ -31,14 +31,19 @@ NOTES / CAVEATS:
   played sound yet, or it's a system window) — the overlay will say
   "No audio session" in that case.
 - Close the script from the terminal (Ctrl+C) or Task Manager to stop it.
+- If something goes wrong, check "smartvol.log" next to the script/exe
+  for details instead of a console window (there usually isn't one).
 --------------------------------------------------------------------
 """
 
 import json
+import logging
+import logging.handlers
 import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 from ctypes import c_ulong, c_wchar_p
@@ -74,20 +79,62 @@ OVERLAY_WIDTH = 340
 OVERLAY_HEIGHT = 100
 OVERLAY_OPACITY = 0.92
 ICON_SIZE = 40
+POLL_INTERVAL_MS = 30         # how often the event queue is drained
+WATCHDOG_INTERVAL_MS = 2000   # how often the watchdog checks the poller
+WATCHDOG_STALL_SECONDS = 5    # how long before the poller is considered stuck
 # ---------------------------------------------------------------------
 
 event_queue = queue.Queue()
 _icon_cache = {}
+_last_poll_time = time.time()
+
+
+# ----------------------------- Logging --------------------------------
+# PyInstaller --windowed/--noconsole builds have no terminal, and
+# sys.stdout / sys.stderr are often None in that case. Anything that
+# tries to print/write a traceback to them will itself raise, which is
+# exactly the kind of silent failure that's hard to diagnose. We set up
+# file logging first, then make stdout/stderr safe no-ops if missing,
+# then route uncaught exceptions (including Tkinter callback exceptions)
+# into the log file instead of a place nobody will ever see.
+
+def _base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _log_path():
+    return os.path.join(_base_dir(), "smartvol.log")
+
+
+def setup_logging():
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
+
+    handler = logging.handlers.RotatingFileHandler(
+        _log_path(), maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+    )
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(threadName)s] %(message)s")
+    )
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(handler)
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        logging.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+
+    sys.excepthook = _excepthook
+    logging.info("SmartVol starting up")
 
 
 # ----------------------- Config management ---------------------------
 
 def _config_path():
-    if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "settings.json")
+    return os.path.join(_base_dir(), "settings.json")
 
 
 def load_config():
@@ -97,7 +144,7 @@ def load_config():
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
-            pass
+            logging.exception("Failed to load config")
     return {"hidden_devices": []}
 
 
@@ -107,7 +154,7 @@ def save_config(cfg):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
     except Exception:
-        pass
+        logging.exception("Failed to save config")
 
 
 # ----------------------- IPolicyConfig COM ---------------------------
@@ -156,6 +203,7 @@ def get_foreground_pid_and_title():
         title = win32gui.GetWindowText(hwnd)
         return pid, title
     except Exception:
+        logging.exception("get_foreground_pid_and_title failed")
         return None, None
 
 
@@ -174,22 +222,37 @@ def get_exe_path(pid):
 
 
 def find_audio_session(pid, proc_name):
-    sessions = AudioUtilities.GetAllSessions()
+    """Find the pycaw session for a pid/process name.
+
+    NOTE: session.Process is a COM call. If the process/session has
+    exited or expired between enumeration and this check (very common
+    when you switch focus to something that's about to close, or a
+    video that just finished), it can raise a COM error. That error
+    is deliberately caught here (rather than left to bubble up) so a
+    single stale session can never take down the caller.
+    """
+    try:
+        sessions = AudioUtilities.GetAllSessions()
+    except Exception:
+        logging.exception("GetAllSessions failed")
+        return None
 
     for session in sessions:
-        proc = session.Process
+        try:
+            proc = session.Process
+        except Exception:
+            continue
         if proc and proc.pid == pid:
             return session
 
     if proc_name:
         for session in sessions:
-            proc = session.Process
-            if proc:
-                try:
-                    if proc.name().lower() == proc_name.lower():
-                        return session
-                except Exception:
-                    continue
+            try:
+                proc = session.Process
+                if proc and proc.name().lower() == proc_name.lower():
+                    return session
+            except Exception:
+                continue
     return None
 
 
@@ -239,6 +302,7 @@ def get_icon_image(exe_path, size=ICON_SIZE):
         for h in (small or []):
             win32gui.DestroyIcon(h)
     except Exception:
+        logging.exception("get_icon_image failed for %s", exe_path)
         img = None
 
     _icon_cache[exe_path] = img
@@ -428,7 +492,11 @@ class SettingsWindow:
         scrollbar.pack(side="right", fill="y")
 
         self.vars.clear()
-        devices = get_active_output_devices()
+        try:
+            devices = get_active_output_devices()
+        except Exception:
+            logging.exception("get_active_output_devices failed")
+            devices = []
         hidden = set(self.config.get("hidden_devices", []))
 
         for dev_id, dev_name in devices:
@@ -491,36 +559,78 @@ def handle_app_volume(direction, overlay):
         overlay.show(display_name, 0, icon, no_session=True)
         return
 
-    volume_ctl = session.SimpleAudioVolume
-    current = volume_ctl.GetMasterVolume()
-    new_vol = max(0.0, min(1.0, current + direction * STEP))
-    volume_ctl.SetMasterVolume(new_vol, None)
+    # The session can become stale between find_audio_session() returning
+    # it and us reading/writing its volume (the owning app can exit, or
+    # the session can expire, in that window). Treat that the same as
+    # "no audio session" instead of letting it raise.
+    try:
+        volume_ctl = session.SimpleAudioVolume
+        current = volume_ctl.GetMasterVolume()
+        new_vol = max(0.0, min(1.0, current + direction * STEP))
+        volume_ctl.SetMasterVolume(new_vol, None)
+    except Exception:
+        logging.exception("Failed to adjust app volume for pid=%s (%s)", pid, display_name)
+        exe_path = get_exe_path(pid)
+        icon = get_icon_image(exe_path)
+        overlay.show(display_name, 0, icon, no_session=True)
+        return
 
     exe_path = get_exe_path(pid)
     icon = get_icon_image(exe_path)
-
     overlay.show(display_name, new_vol, icon)
 
 
 def handle_global_volume(direction, overlay):
-    volume_ctl = get_master_volume_interface()
-    current = volume_ctl.GetMasterVolumeLevelScalar()
-    new_vol = max(0.0, min(1.0, current + direction * STEP))
-    volume_ctl.SetMasterVolumeLevelScalar(new_vol, None)
+    try:
+        volume_ctl = get_master_volume_interface()
+        current = volume_ctl.GetMasterVolumeLevelScalar()
+        new_vol = max(0.0, min(1.0, current + direction * STEP))
+        volume_ctl.SetMasterVolumeLevelScalar(new_vol, None)
+    except Exception:
+        logging.exception("Failed to adjust global volume")
+        return
     overlay.show("System Volume", new_vol, None)
 
 
 def poll_queue(root, overlay):
-    try:
-        while True:
+    """Drain and process queued hotkey events.
+
+    IMPORTANT: this function reschedules itself via root.after() at the
+    end. That reschedule call must ALWAYS run, no matter what happens
+    while processing events - otherwise this loop dies silently and no
+    future hotkey press does anything until the app is restarted. Each
+    event is processed in its own try/except so one bad event (e.g. a
+    COM call to an audio session that just expired) can't take the
+    whole loop down or block events after it.
+    """
+    global _last_poll_time
+    _last_poll_time = time.time()
+
+    while True:
+        try:
             mode, direction = event_queue.get_nowait()
+        except queue.Empty:
+            break
+
+        try:
             if mode == "app":
                 handle_app_volume(direction, overlay)
             else:
                 handle_global_volume(direction, overlay)
-    except queue.Empty:
-        pass
-    root.after(30, poll_queue, root, overlay)
+        except Exception:
+            logging.exception("Unhandled error processing event mode=%s direction=%s", mode, direction)
+
+    root.after(POLL_INTERVAL_MS, poll_queue, root, overlay)
+
+
+def watchdog(root, overlay):
+    """Safety net: if poll_queue ever stops rescheduling itself for any
+    reason we didn't anticipate, this notices within a couple seconds
+    and kicks it back into life instead of requiring an app restart."""
+    if time.time() - _last_poll_time > WATCHDOG_STALL_SECONDS:
+        logging.error("poll_queue appears stalled - restarting it")
+        root.after_idle(poll_queue, root, overlay)
+    root.after(WATCHDOG_INTERVAL_MS, watchdog, root, overlay)
 
 
 # --------------------------- Tray icon ---------------------------------
@@ -542,13 +652,24 @@ class TrayManager:
             menu=self._build_menu(),
         )
         self._icon_thread = threading.Thread(
-            target=self.icon.run, daemon=True,
+            target=self._run_icon, daemon=True, name="TrayIconThread",
         )
         self._icon_thread.start()
 
+    def _run_icon(self):
+        try:
+            self.icon.run()
+        except Exception:
+            logging.exception("Tray icon thread crashed")
+
     def _build_menu(self):
-        devices = get_active_output_devices()
-        default_id = get_default_device_id()
+        try:
+            devices = get_active_output_devices()
+            default_id = get_default_device_id()
+        except Exception:
+            logging.exception("Failed to enumerate audio devices for tray menu")
+            devices, default_id = [], None
+
         hidden = set(self.config.get("hidden_devices", []))
 
         visible_devices = [
@@ -566,7 +687,7 @@ class TrayManager:
                         set_default_device(did)
                         self._refresh_menu()
                     except Exception:
-                        pass
+                        logging.exception("Failed to switch default device to %s", did)
                 return _switch
 
             device_items.append(
@@ -593,8 +714,11 @@ class TrayManager:
 
     def _refresh_menu(self):
         if self.icon is not None:
-            self.icon.menu = self._build_menu()
-            self.icon.update_menu()
+            try:
+                self.icon.menu = self._build_menu()
+                self.icon.update_menu()
+            except Exception:
+                logging.exception("Failed to refresh tray menu")
 
     def _on_settings(self, icon, item):
         self.root.after(0, self.settings_win.open)
@@ -614,29 +738,52 @@ class TrayManager:
 # --------------------------- Main --------------------------------------
 
 def main():
+    setup_logging()
+
     root = tk.Tk()
     root.withdraw()
+
+    # Tkinter's default exception reporter writes to sys.stderr, which is
+    # None in a --windowed PyInstaller build. Route it into the log file
+    # instead so callback errors are visible and don't fail while trying
+    # to report themselves.
+    def _tk_report_callback_exception(exc, val, tb):
+        logging.error("Tkinter callback exception", exc_info=(exc, val, tb))
+
+    root.report_callback_exception = _tk_report_callback_exception
 
     overlay = Overlay(root)
 
     tray = TrayManager(root, overlay)
     tray.start()
 
+    def _safe_enqueue(mode, direction):
+        try:
+            event_queue.put_nowait((mode, direction))
+        except Exception:
+            logging.exception("Failed to enqueue hotkey event")
+
     keyboard.add_hotkey(
-        HOTKEY_UP, lambda: event_queue.put(("app", 1)), suppress=SUPPRESS_KEYS
+        HOTKEY_UP, lambda: _safe_enqueue("app", 1), suppress=SUPPRESS_KEYS
     )
     keyboard.add_hotkey(
-        HOTKEY_DOWN, lambda: event_queue.put(("app", -1)), suppress=SUPPRESS_KEYS
+        HOTKEY_DOWN, lambda: _safe_enqueue("app", -1), suppress=SUPPRESS_KEYS
     )
     keyboard.add_hotkey(
-        HOTKEY_RIGHT, lambda: event_queue.put(("global", 1)), suppress=SUPPRESS_KEYS
+        HOTKEY_RIGHT, lambda: _safe_enqueue("global", 1), suppress=SUPPRESS_KEYS
     )
     keyboard.add_hotkey(
-        HOTKEY_LEFT, lambda: event_queue.put(("global", -1)), suppress=SUPPRESS_KEYS
+        HOTKEY_LEFT, lambda: _safe_enqueue("global", -1), suppress=SUPPRESS_KEYS
     )
 
-    root.after(30, poll_queue, root, overlay)
-    root.mainloop()
+    root.after(POLL_INTERVAL_MS, poll_queue, root, overlay)
+    root.after(WATCHDOG_INTERVAL_MS, watchdog, root, overlay)
+
+    try:
+        root.mainloop()
+    except Exception:
+        logging.exception("mainloop crashed")
+    logging.info("SmartVol shutting down")
 
 
 if __name__ == "__main__":
