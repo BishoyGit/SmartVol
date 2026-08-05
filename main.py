@@ -678,6 +678,15 @@ class HotkeyManager:
         self._reset_keyboard_listener()
         self._register_hotkeys()
 
+    def force_fix(self):
+        """Rebuild the keyboard hook on demand from the tray menu."""
+        if self._stopped:
+            logging.warning("Ignoring manual hotkey fix after shutdown")
+            return
+
+        logging.info("Manually restarting SmartVol hotkeys")
+        self.restart()
+
     def _register_hotkeys(self):
         removers = []
         try:
@@ -748,6 +757,26 @@ class HotkeyManager:
         try:
             listener.listening = False
             listener.handlers.clear()
+
+            # A fullscreen application can leave a modifier marked as pressed
+            # when its key-up event is not delivered to this hook. Clear the
+            # listener state before registering the combinations again.
+            for attr_name in (
+                "active_modifiers",
+                "modifier_states",
+                "blocking_keys",
+                "nonblocking_keys",
+                "blocking_hotkeys",
+                "nonblocking_hotkeys",
+            ):
+                value = getattr(listener, attr_name, None)
+                if hasattr(value, "clear"):
+                    value.clear()
+
+            for module_name in ("_pressed_events", "_logically_pressed_keys", "_physically_pressed_keys"):
+                value = getattr(keyboard, module_name, None)
+                if hasattr(value, "clear"):
+                    value.clear()
         except Exception:
             logging.exception("Failed to reset keyboard listener state")
 
@@ -755,9 +784,10 @@ class HotkeyManager:
 # --------------------------- Tray icon ---------------------------------
 
 class TrayManager:
-    def __init__(self, root, overlay):
+    def __init__(self, root, overlay, on_fix_hotkeys):
         self.root = root
         self.overlay = overlay
+        self.on_fix_hotkeys = on_fix_hotkeys
         self.config = load_config()
         self.settings_win = SettingsWindow(root, self.config, self._on_settings_saved)
         self.icon = None
@@ -826,6 +856,7 @@ class TrayManager:
         menu = pystray.Menu(
             *device_items,
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Fix Hotkeys", self._on_fix_hotkeys),
             pystray.MenuItem("Settings", self._on_settings),
             pystray.MenuItem("Exit", self._on_exit),
         )
@@ -841,6 +872,11 @@ class TrayManager:
 
     def _on_settings(self, icon, item):
         self.root.after(0, self.settings_win.open)
+
+    def _on_fix_hotkeys(self, icon, item):
+        # pystray callbacks run on its worker thread; perform the reset on the
+        # Tk thread together with the automatic watchdog.
+        self.root.after(0, self.on_fix_hotkeys)
 
     def _on_settings_saved(self):
         self._refresh_menu()
@@ -875,9 +911,6 @@ def main():
 
     overlay = Overlay(root)
 
-    tray = TrayManager(root, overlay)
-    tray.start()
-
     def _safe_enqueue(mode, direction):
         try:
             event_queue.put_nowait((mode, direction))
@@ -885,6 +918,8 @@ def main():
             logging.exception("Failed to enqueue hotkey event")
 
     _hotkey_manager = HotkeyManager(root, _safe_enqueue)
+    tray = TrayManager(root, overlay, _hotkey_manager.force_fix)
+    tray.start()
     _hotkey_manager.start()
 
     root.after(POLL_INTERVAL_MS, poll_queue, root, overlay)
