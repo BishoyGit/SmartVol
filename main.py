@@ -82,11 +82,13 @@ ICON_SIZE = 40
 POLL_INTERVAL_MS = 30         # how often the event queue is drained
 WATCHDOG_INTERVAL_MS = 2000   # how often the watchdog checks the poller
 WATCHDOG_STALL_SECONDS = 5    # how long before the poller is considered stuck
+HOTKEY_WATCHDOG_INTERVAL_MS = 3000  # how often the keyboard hook is checked
 # ---------------------------------------------------------------------
 
 event_queue = queue.Queue()
 _icon_cache = {}
 _last_poll_time = time.time()
+_hotkey_manager = None
 
 
 # ----------------------------- Logging --------------------------------
@@ -633,6 +635,123 @@ def watchdog(root, overlay):
     root.after(WATCHDOG_INTERVAL_MS, watchdog, root, overlay)
 
 
+class HotkeyManager:
+    """Register hotkeys and recover if the keyboard package's hook dies.
+
+    The keyboard package keeps an internal "listening" flag after it starts its
+    hook threads. If either thread exits after a transient hook failure, that
+    flag can remain true, so later add_hotkey calls won't start a fresh hook and
+    the app appears alive but no hotkeys fire. This manager checks the threads
+    Tk-side and rebuilds keyboard's listener state when necessary.
+    """
+
+    def __init__(self, root, enqueue):
+        self.root = root
+        self.enqueue = enqueue
+        self._hotkey_removers = []
+        self._stopped = False
+
+    def start(self):
+        self._register_hotkeys()
+        self.root.after(HOTKEY_WATCHDOG_INTERVAL_MS, self.watchdog)
+
+    def stop(self):
+        self._stopped = True
+        self._unregister_hotkeys()
+        try:
+            keyboard.unhook_all_hotkeys()
+        except Exception:
+            logging.exception("Failed to unhook keyboard hotkeys during shutdown")
+
+    def watchdog(self):
+        if self._stopped:
+            return
+
+        if not self._listener_is_healthy():
+            logging.error("Keyboard hook listener is not healthy - restarting hotkeys")
+            self.restart()
+
+        self.root.after(HOTKEY_WATCHDOG_INTERVAL_MS, self.watchdog)
+
+    def restart(self):
+        self._unregister_hotkeys()
+        self._reset_keyboard_listener()
+        self._register_hotkeys()
+
+    def _register_hotkeys(self):
+        removers = []
+        try:
+            removers.append(keyboard.add_hotkey(
+                    HOTKEY_UP,
+                    lambda: self.enqueue("app", 1),
+                    suppress=SUPPRESS_KEYS,
+                ))
+            removers.append(keyboard.add_hotkey(
+                    HOTKEY_DOWN,
+                    lambda: self.enqueue("app", -1),
+                    suppress=SUPPRESS_KEYS,
+                ))
+            removers.append(keyboard.add_hotkey(
+                    HOTKEY_RIGHT,
+                    lambda: self.enqueue("global", 1),
+                    suppress=SUPPRESS_KEYS,
+                ))
+            removers.append(keyboard.add_hotkey(
+                    HOTKEY_LEFT,
+                    lambda: self.enqueue("global", -1),
+                    suppress=SUPPRESS_KEYS,
+                ))
+            self._hotkey_removers = removers
+            logging.info("Registered SmartVol hotkeys")
+        except Exception:
+            for remover in removers:
+                try:
+                    remover()
+                except Exception:
+                    logging.exception("Failed to remove partially registered hotkey")
+            self._hotkey_removers = []
+            logging.exception("Failed to register SmartVol hotkeys")
+
+    def _unregister_hotkeys(self):
+        for remover in self._hotkey_removers:
+            try:
+                remover()
+            except Exception:
+                logging.exception("Failed to remove a SmartVol hotkey")
+        self._hotkey_removers = []
+
+    def _listener_is_healthy(self):
+        listener = getattr(keyboard, "_listener", None)
+        if listener is None:
+            return False
+
+        if not getattr(listener, "listening", False):
+            return False
+
+        listening_thread = getattr(listener, "listening_thread", None)
+        processing_thread = getattr(listener, "processing_thread", None)
+        if listening_thread is None or processing_thread is None:
+            return False
+
+        return listening_thread.is_alive() and processing_thread.is_alive()
+
+    def _reset_keyboard_listener(self):
+        try:
+            keyboard.unhook_all_hotkeys()
+        except Exception:
+            logging.exception("Failed to clear keyboard hotkeys before restart")
+
+        listener = getattr(keyboard, "_listener", None)
+        if listener is None:
+            return
+
+        try:
+            listener.listening = False
+            listener.handlers.clear()
+        except Exception:
+            logging.exception("Failed to reset keyboard listener state")
+
+
 # --------------------------- Tray icon ---------------------------------
 
 class TrayManager:
@@ -738,6 +857,8 @@ class TrayManager:
 # --------------------------- Main --------------------------------------
 
 def main():
+    global _hotkey_manager
+
     setup_logging()
 
     root = tk.Tk()
@@ -763,18 +884,8 @@ def main():
         except Exception:
             logging.exception("Failed to enqueue hotkey event")
 
-    keyboard.add_hotkey(
-        HOTKEY_UP, lambda: _safe_enqueue("app", 1), suppress=SUPPRESS_KEYS
-    )
-    keyboard.add_hotkey(
-        HOTKEY_DOWN, lambda: _safe_enqueue("app", -1), suppress=SUPPRESS_KEYS
-    )
-    keyboard.add_hotkey(
-        HOTKEY_RIGHT, lambda: _safe_enqueue("global", 1), suppress=SUPPRESS_KEYS
-    )
-    keyboard.add_hotkey(
-        HOTKEY_LEFT, lambda: _safe_enqueue("global", -1), suppress=SUPPRESS_KEYS
-    )
+    _hotkey_manager = HotkeyManager(root, _safe_enqueue)
+    _hotkey_manager.start()
 
     root.after(POLL_INTERVAL_MS, poll_queue, root, overlay)
     root.after(WATCHDOG_INTERVAL_MS, watchdog, root, overlay)
@@ -783,6 +894,11 @@ def main():
         root.mainloop()
     except Exception:
         logging.exception("mainloop crashed")
+    finally:
+        if _hotkey_manager is not None:
+            _hotkey_manager.stop()
+            _hotkey_manager = None
+        tray.stop()
     logging.info("SmartVol shutting down")
 
 
