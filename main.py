@@ -139,24 +139,39 @@ def _config_path():
     return os.path.join(_base_dir(), "settings.json")
 
 
+def _config_paths():
+    paths = [_config_path()]
+    app_data = os.environ.get("APPDATA")
+    if app_data:
+        user_path = os.path.join(app_data, "SmartVol", "settings.json")
+        if user_path not in paths:
+            paths.append(user_path)
+    return paths
+
+
 def load_config():
-    path = _config_path()
-    if os.path.exists(path):
+    for path in _config_paths():
+        if not os.path.exists(path):
+            continue
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
-            logging.exception("Failed to load config")
+            logging.exception("Failed to load config from %s", path)
     return {"hidden_devices": []}
 
 
 def save_config(cfg):
-    path = _config_path()
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2)
-    except Exception:
-        logging.exception("Failed to save config")
+    for path in _config_paths():
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+            logging.info("Saved SmartVol settings to %s", path)
+            return True
+        except Exception:
+            logging.exception("Failed to save config to %s", path)
+    return False
 
 
 def _device_id_key(device_id):
@@ -515,6 +530,7 @@ class SettingsWindow:
             self.vars[dev_key] = visible
             cb = tk.Checkbutton(
                 inner, text=dev_name, variable=visible,
+                command=self._on_visibility_changed,
                 fg="white", bg="#2d2d2d", selectcolor="#444444",
                 activebackground="#2d2d2d", activeforeground="white",
                 font=("Segoe UI", 10), anchor="w", pady=3,
@@ -538,12 +554,19 @@ class SettingsWindow:
         )
         cancel_btn.pack(side="right")
 
-    def _on_save(self):
+    def _save_hidden_devices(self):
         hidden = [dev_id for dev_id, var in self.vars.items() if not var.get()]
         self.config["hidden_devices"] = hidden
-        save_config(self.config)
-        if self.on_save:
+        if save_config(self.config) and self.on_save:
             self.on_save()
+
+    def _on_visibility_changed(self):
+        # Persist each checkbox change so hiding does not depend on a second
+        # Save click, and refresh the tray immediately.
+        self._save_hidden_devices()
+
+    def _on_save(self):
+        self._save_hidden_devices()
         self._on_close()
 
     def _on_close(self):
@@ -878,8 +901,14 @@ class TrayManager:
     def _refresh_menu(self):
         if self.icon is not None:
             try:
-                self.icon.menu = self._build_menu()
-                self.icon.update_menu()
+                # Replacing the descriptor alone can leave the old native
+                # HMENU cached by the Windows pystray backend. Recreate the
+                # icon so the next right-click is guaranteed to use the new
+                # device list.
+                self.icon.stop()
+                self.icon = None
+                self.start()
+                logging.info("Refreshed SmartVol tray menu")
             except Exception:
                 logging.exception("Failed to refresh tray menu")
 
