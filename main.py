@@ -159,6 +159,11 @@ def save_config(cfg):
         logging.exception("Failed to save config")
 
 
+def _device_id_key(device_id):
+    """Return the stable string form used for hidden-device settings."""
+    return str(device_id).strip()
+
+
 # ----------------------- IPolicyConfig COM ---------------------------
 
 class IPolicyConfig(IUnknown):
@@ -499,11 +504,15 @@ class SettingsWindow:
         except Exception:
             logging.exception("get_active_output_devices failed")
             devices = []
-        hidden = set(self.config.get("hidden_devices", []))
+        hidden = {
+            _device_id_key(device_id)
+            for device_id in self.config.get("hidden_devices", [])
+        }
 
         for dev_id, dev_name in devices:
-            visible = tk.BooleanVar(value=(dev_id not in hidden))
-            self.vars[dev_id] = visible
+            dev_key = _device_id_key(dev_id)
+            visible = tk.BooleanVar(value=(dev_key not in hidden))
+            self.vars[dev_key] = visible
             cb = tk.Checkbutton(
                 inner, text=dev_name, variable=visible,
                 fg="white", bg="#2d2d2d", selectcolor="#444444",
@@ -819,10 +828,14 @@ class TrayManager:
             logging.exception("Failed to enumerate audio devices for tray menu")
             devices, default_id = [], None
 
-        hidden = set(self.config.get("hidden_devices", []))
+        hidden = {
+            _device_id_key(device_id)
+            for device_id in self.config.get("hidden_devices", [])
+        }
 
         visible_devices = [
-            (did, name) for did, name in devices if did not in hidden
+            (did, name) for did, name in devices
+            if _device_id_key(did) not in hidden
         ]
 
         device_items = []
@@ -879,6 +892,9 @@ class TrayManager:
         self.root.after(0, self.on_fix_hotkeys)
 
     def _on_settings_saved(self):
+        # Reload the file so the tray always uses exactly what was persisted,
+        # even if the device enumeration returned new ID objects.
+        self.config = load_config()
         self._refresh_menu()
 
     def _on_exit(self, icon, item):
