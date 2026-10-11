@@ -32,11 +32,21 @@ dotnet run --project SmartVol
 # Release build
 dotnet build SmartVol/SmartVol.csproj -c Release
 
-# Single-file exe (no runtime needed on target machine)
-dotnet publish SmartVol/SmartVol.csproj -c Release -r win-x64 --self-contained true `
-  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-  -o publish
+# Both distributables at once (see table below)
+.\publish.ps1
 ```
+
+| File | Size | Needs |
+| ---- | ---- | ----- |
+| `publish/SmartVol.exe` | ~2 MB | .NET 10 Desktop Runtime (already on dev PCs) |
+| `publish/SmartVol-portable.exe` | ~165 MB | nothing — runs on any Windows 10/11 PC |
+
+Why the difference? The portable exe bundles the entire .NET runtime +
+WPF stack (~99% of its size); our actual code is under 200 KB. Trimming
+can't shrink it: our tray icon stack (WinForms `NotifyIcon`) is explicitly
+blocked from trimming by the .NET SDK, and WPF + trimming is unsafe
+(reflection-based XAML bindings would silently break). So: use `SmartVol.exe`
+on your own machines, `-portable` everywhere else.
 
 Useful flags: `SmartVol.exe --show-settings` opens settings directly,
 `SmartVol.exe --selftest-audio` runs a headless audio-pipeline check
