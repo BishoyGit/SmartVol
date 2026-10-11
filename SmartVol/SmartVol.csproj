@@ -10,7 +10,7 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <AssemblyName>SmartVol</AssemblyName>
     <Product>SmartVol</Product>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <Description>Per-app and system volume control via Right Ctrl + Arrow keys, with overlay and tray.</Description>
   </PropertyGroup>
 

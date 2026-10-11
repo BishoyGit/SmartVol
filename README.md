@@ -48,9 +48,12 @@ Get the Windows x64 release from the
 - **SmartVol-portable.exe** — about 167 MiB; includes the runtime and needs no
   separate .NET installation.
 
-Both downloads are single-file executables. The portable version is much
-larger because it bundles the .NET runtime and WPF framework alongside the
-application.
+The latest release currently contains the small framework-dependent
+`SmartVol.exe`. The self-contained `SmartVol-portable.exe` is available in the
+[v1.1.0 release](https://github.com/BishoyGit/SmartVol/releases/tag/v1.1.0)
+and will be updated separately. Both are single-file executables. The portable
+version is much larger because it bundles the .NET runtime and WPF framework
+alongside the application.
 
 ## Run and build
 
