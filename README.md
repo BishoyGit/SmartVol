@@ -25,6 +25,20 @@ Default shortcuts:
 Every shortcut can be customized from tray → Settings → Hotkeys. Either the
 left or right modifier key can be enabled in Settings.
 
+## Screenshots
+
+![SmartVol demo](screenshots/demo.gif)
+
+![Per-app volume overlay](screenshots/chrome-volume-overlay.jpg)
+
+![System volume overlay](screenshots/system-volume-overlay.jpg)
+
+![Hotkey settings](screenshots/settings-panel-1.jpg)
+
+![General settings](screenshots/settings-panel-2.jpg)
+
+![Audio device settings](screenshots/settings-panel-3.jpg)
+
 ## Download
 
 Get the Windows x64 release from the
