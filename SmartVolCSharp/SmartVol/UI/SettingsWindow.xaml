@@ -203,6 +203,9 @@
                                 Style="{StaticResource SecondaryButton}" Margin="0,4" Click="OnHotkeyButtonClick"/>
                     </Grid>
                 </Border>
+                <CheckBox x:Name="EitherSideCheck" Content="Either side works (Left Ctrl counts as Right Ctrl, and so on)"
+                          Foreground="#EDEDEF" FontSize="12.5" Margin="0,10,0,0"
+                          Checked="OnEitherSideChanged" Unchecked="OnEitherSideChanged"/>
                 <TextBlock Style="{StaticResource SectionHint}" Margin="0,6,0,0">
                     Tip: keep at least one modifier so normal typing is never blocked. Only the exact combination is captured — everything else keeps working.
                 </TextBlock>

@@ -50,6 +50,7 @@ public partial class SettingsWindow : Window
     private readonly Dictionary<string, HotkeyBinding> _pendingHotkeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<int> _captureMods = new();
     private bool _loading;
+    private bool _pendingEitherSide;
     private string? _captureAction;
 
     public SettingsWindow(ConfigService configService, AppConfig config, AudioService audio, Action onChanged)
@@ -90,20 +91,31 @@ public partial class SettingsWindow : Window
 
     private void LoadHotkeys()
     {
-        _pendingHotkeys.Clear();
-        var defaults = HotkeyBindings.DefaultConfig();
-        foreach (string action in HotkeyActions)
+        _loading = true;
+        try
         {
-            if (_config.Hotkeys.TryGetValue(action, out var binding) &&
-                binding != null && binding.Key != 0 &&
-                !HotkeyBindings.IsModifierVk(binding.Key))
+            _pendingEitherSide = _config.HotkeyEitherSideModifiers;
+            EitherSideCheck.IsChecked = _pendingEitherSide;
+
+            _pendingHotkeys.Clear();
+            var defaults = HotkeyBindings.DefaultConfig();
+            foreach (string action in HotkeyActions)
             {
-                _pendingHotkeys[action] = binding.Clone();
+                if (_config.Hotkeys.TryGetValue(action, out var binding) &&
+                    binding != null && binding.Key != 0 &&
+                    !HotkeyBindings.IsModifierVk(binding.Key))
+                {
+                    _pendingHotkeys[action] = binding.Clone();
+                }
+                else
+                {
+                    _pendingHotkeys[action] = defaults[action].Clone();
+                }
             }
-            else
-            {
-                _pendingHotkeys[action] = defaults[action].Clone();
-            }
+        }
+        finally
+        {
+            _loading = false;
         }
 
         UpdateHotkeyButtons();
@@ -141,10 +153,19 @@ public partial class SettingsWindow : Window
             else
             {
                 _pendingHotkeys.TryGetValue(action, out var binding);
-                button.Content = HotkeyBindings.ToDisplayString(binding);
+                button.Content = HotkeyBindings.ToDisplayString(binding, _pendingEitherSide);
                 button.ClearValue(Button.BackgroundProperty);
             }
         }
+    }
+
+    private void OnEitherSideChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading)
+            return;
+
+        _pendingEitherSide = EitherSideCheck.IsChecked == true;
+        UpdateHotkeyButtons();
     }
 
     private void OnHotkeyButtonClick(object sender, RoutedEventArgs e)
@@ -234,7 +255,7 @@ public partial class SettingsWindow : Window
         }
 
         _pendingHotkeys[_captureAction] = binding;
-        AppLogger.Info($"Hotkey captured for {_captureAction}: {HotkeyBindings.ToDisplayString(binding)}");
+        AppLogger.Info($"Hotkey captured for {_captureAction}: {HotkeyBindings.ToDisplayString(binding, _pendingEitherSide)}");
         DisarmCapture();
         e.Handled = true;
     }
@@ -352,6 +373,7 @@ public partial class SettingsWindow : Window
             _config.OverlayDurationMs = (int)DurationSlider.Value;
             _config.OverlayOpacity = OpacitySlider.Value / 100.0;
             _config.RunAtStartup = StartupCheck.IsChecked == true;
+            _config.HotkeyEitherSideModifiers = _pendingEitherSide;
             _config.Hotkeys = _pendingHotkeys.ToDictionary(
                 kv => kv.Key, kv => kv.Value.Clone(),
                 StringComparer.OrdinalIgnoreCase);

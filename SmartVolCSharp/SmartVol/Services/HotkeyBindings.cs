@@ -117,8 +117,27 @@ internal static class HotkeyBindings
         _ => 9,
     };
 
+    /// <summary>Left/right variants of one modifier share a family.</summary>
+    public static int ModifierFamily(int vk) => vk switch
+    {
+        VkLcontrol or VkRcontrol => 0,
+        VkLshift or VkRshift => 1,
+        VkLmenu or VkRmenu => 2,
+        VkLwin or VkRwin => 3,
+        _ => 9,
+    };
+
+    public static string ModifierFamilyName(int vk) => ModifierFamily(vk) switch
+    {
+        0 => "Ctrl",
+        1 => "Shift",
+        2 => "Alt",
+        3 => "Win",
+        _ => KeyName(vk),
+    };
+
     /// <summary>"Right Ctrl + ↑", "Ctrl + Shift + A", "F9" ...</summary>
-    public static string ToDisplayString(HotkeyBinding? binding)
+    public static string ToDisplayString(HotkeyBinding? binding, bool eitherSide = false)
     {
         if (binding == null || binding.Key == 0)
             return "Not set";
@@ -126,7 +145,8 @@ internal static class HotkeyBindings
             .Where(IsModifierVk)
             .Distinct()
             .OrderBy(ModifierSortOrder)
-            .Select(KeyName)
+            .Select(vk => eitherSide ? ModifierFamilyName(vk) : KeyName(vk))
+            .Distinct()
             .ToList();
         parts.Add(KeyName(binding.Key));
         return string.Join(" + ", parts);

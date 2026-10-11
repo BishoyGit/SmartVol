@@ -10,6 +10,7 @@ public sealed class AppConfig
     public int OverlayDurationMs { get; set; } = 1300;
     public double OverlayOpacity { get; set; } = 0.92;
     public bool RunAtStartup { get; set; } = false;
+    public bool HotkeyEitherSideModifiers { get; set; } = false;
     public Dictionary<string, HotkeyBinding> Hotkeys { get; set; } = HotkeyBindings.DefaultConfig();
 
     public void Normalize()

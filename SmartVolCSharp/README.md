@@ -55,6 +55,7 @@ is compatible with the Python version's file:
   "OverlayDurationMs": 1300,
   "OverlayOpacity": 0.92,
   "RunAtStartup": false,
+  "HotkeyEitherSideModifiers": false,
   "Hotkeys": {
     "AppUp": { "Modifiers": [163], "Key": 38 },
     "AppDown": { "Modifiers": [163], "Key": 40 },
@@ -66,8 +67,10 @@ is compatible with the Python version's file:
 
 `Modifiers`/`Key` are virtual-key codes (163 = Right Ctrl, 37–40 = arrows).
 Only the exact combination fires; everything else passes through untouched.
-Files saved before custom hotkeys existed simply miss the section and keep
-the classic Right Ctrl + Arrows defaults.
+With `HotkeyEitherSideModifiers` on (Settings → "Either side works"), left
+and right variants of Ctrl / Shift / Alt / Win count as the same key, so
+e.g. either Ctrl + ↑ works. Files saved before custom hotkeys existed
+simply miss the section and keep the classic Right Ctrl + Arrows defaults.
 
 Everything is also editable in the Settings window (tray → Settings):
 volume step (1–20%), overlay duration/opacity, run-at-startup, all four

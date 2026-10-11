@@ -52,6 +52,7 @@ public sealed class HotkeyService : IDisposable
     private readonly HashSet<int> _downModifiers = new();
     private readonly object _keysLock = new();
     private Dictionary<int, List<HotkeyRule>> _rulesByKey = new();
+    private bool _eitherSide;
     private HookProc? _proc;
     private IntPtr _hookId = IntPtr.Zero;
     private bool _disposed;
@@ -65,9 +66,11 @@ public sealed class HotkeyService : IDisposable
 
     /// <summary>
     /// Replaces the active hotkey rules (e.g. after the user saves settings).
-    /// Safe to call at any time; only clears pressed-key tracking.
+    /// When <paramref name="eitherSideModifiers"/> is on, left/right variants
+    /// of a modifier count as the same key. Safe to call at any time; only
+    /// clears pressed-key tracking.
     /// </summary>
-    public void SetBindings(IEnumerable<HotkeyRule> rules)
+    public void SetBindings(IEnumerable<HotkeyRule> rules, bool eitherSideModifiers)
     {
         var map = new Dictionary<int, List<HotkeyRule>>();
         int count = 0;
@@ -91,12 +94,13 @@ public sealed class HotkeyService : IDisposable
         }
 
         _rulesByKey = map;
+        _eitherSide = eitherSideModifiers;
         lock (_keysLock)
         {
             _downModifiers.Clear();
         }
 
-        AppLogger.Info($"Hotkey bindings updated ({count} rules)");
+        AppLogger.Info($"Hotkey bindings updated ({count} rules, either-side={(eitherSideModifiers ? "on" : "off")})");
     }
 
     public void Start()
@@ -216,6 +220,28 @@ public sealed class HotkeyService : IDisposable
 
     private bool ModifiersMatch(int[] required)
     {
+        if (_eitherSide)
+        {
+            var requiredFamilies = new HashSet<int>(
+                required.Select(HotkeyBindings.ModifierFamily));
+
+            // Every required family must have at least one side down, and no
+            // other family may be down — same exact-match rule, side-blind.
+            foreach (int family in requiredFamilies)
+            {
+                if (!IsFamilyDown(family))
+                    return false;
+            }
+
+            foreach (int mod in HotkeyBindings.AllModifierVks)
+            {
+                if (IsDown(mod) && !requiredFamilies.Contains(HotkeyBindings.ModifierFamily(mod)))
+                    return false;
+            }
+
+            return true;
+        }
+
         // Every required modifier must be down (tracked state with a physical
         // fallback for presses that landed before the hook was installed),
         // and no other modifier may be down — standard exact-match behavior
@@ -233,6 +259,17 @@ public sealed class HotkeyService : IDisposable
         }
 
         return true;
+    }
+
+    private bool IsFamilyDown(int family)
+    {
+        foreach (int mod in HotkeyBindings.AllModifierVks)
+        {
+            if (HotkeyBindings.ModifierFamily(mod) == family && IsDown(mod))
+                return true;
+        }
+
+        return false;
     }
 
     private bool IsDown(int vk)

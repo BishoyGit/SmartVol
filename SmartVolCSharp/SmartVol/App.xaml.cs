@@ -62,7 +62,9 @@ public partial class App : System.Windows.Application
         _hotkeys = new HotkeyService(action =>
             Dispatcher.BeginInvoke(() => _controller.Handle(action)));
         Safe(_hotkeys.Start, "Hotkey start failed");
-        Safe(() => _hotkeys.SetBindings(HotkeyBindings.FromConfig(_config)), "Hotkey bindings load failed");
+        Safe(() => _hotkeys.SetBindings(
+            HotkeyBindings.FromConfig(_config), _config.HotkeyEitherSideModifiers),
+            "Hotkey bindings load failed");
 
         _tray = new TrayManager(
             _audio, _config,
@@ -143,7 +145,8 @@ public partial class App : System.Windows.Application
             onChanged: () =>
             {
                 _tray?.RebuildMenu();
-                _hotkeys?.SetBindings(HotkeyBindings.FromConfig(_config!));
+                _hotkeys?.SetBindings(
+                    HotkeyBindings.FromConfig(_config!), _config!.HotkeyEitherSideModifiers);
             });
         _settings.Closed += (_, _) => _settings = null;
         _settings.Show();
