@@ -1,4 +1,9 @@
+using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using NAudio.CoreAudioApi;
@@ -15,6 +20,13 @@ public sealed record AudioDeviceInfo(string Id, string FriendlyName);
 /// </summary>
 public sealed class AudioService
 {
+    private readonly object _appIconLoadLock = new();
+    private readonly Dictionary<(int Pid, long StartTimeTicks), Task<ImageSource?>> _appIconLoads = new();
+    private readonly Dictionary<string, ImageSource?> _appIconCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _appIconCacheLock = new();
+    private readonly string _appIconCacheDirectory = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "SmartVol", "IconCache");
     private ImageSource? _systemIcon;
 
     private static float Clamp01(float value) => value < 0f ? 0f : value > 1f ? 1f : value;
@@ -160,6 +172,166 @@ public sealed class AudioService
 
     public void SetDefaultDevice(string deviceId) =>
         DefaultDevicePolicy.SetDefaultEndpoint(deviceId);
+
+    public Task<ImageSource?> GetAppIconAsync(int pid, long processStartTimeUtcTicks)
+    {
+        var processKey = (pid, processStartTimeUtcTicks);
+        lock (_appIconLoadLock)
+        {
+            if (_appIconLoads.TryGetValue(processKey, out var existing))
+                return existing;
+
+            var load = Task.Run(() => LoadAppIcon(pid, processStartTimeUtcTicks));
+            _appIconLoads.Add(processKey, load);
+            _ = load.ContinueWith(
+                completed =>
+                {
+                    lock (_appIconLoadLock)
+                    {
+                        if (_appIconLoads.TryGetValue(processKey, out var current) &&
+                            ReferenceEquals(current, completed))
+                        {
+                            _appIconLoads.Remove(processKey);
+                        }
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            return load;
+        }
+    }
+
+    private ImageSource? LoadAppIcon(int pid, long expectedStartTimeUtcTicks)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            if (expectedStartTimeUtcTicks != 0)
+            {
+                try
+                {
+                    if (process.StartTime.ToUniversalTime().Ticks != expectedStartTimeUtcTicks)
+                        return null;
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Error($"Failed to verify process start time for app icon pid={pid}", ex);
+                }
+            }
+
+            string? exePath = process.MainModule?.FileName;
+            if (string.IsNullOrWhiteSpace(exePath))
+                return null;
+
+            var exe = new FileInfo(exePath);
+            string cacheKey = $"{exe.FullName}|{exe.Length}|{exe.LastWriteTimeUtc.Ticks}";
+            lock (_appIconCacheLock)
+            {
+                if (_appIconCache.TryGetValue(cacheKey, out var cached))
+                    return cached;
+            }
+
+            string cacheFile = Path.Combine(
+                _appIconCacheDirectory,
+                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(cacheKey))) + ".png");
+            ImageSource? image = File.Exists(cacheFile) ? LoadCachedIcon(cacheFile) : null;
+            if (image == null)
+            {
+                image = ExtractAppIcon(exePath);
+                if (image != null)
+                    SaveCachedIcon(image, cacheFile);
+            }
+
+            lock (_appIconCacheLock)
+            {
+                _appIconCache[cacheKey] = image;
+            }
+
+            return image;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error($"Failed to load app icon for pid={pid}", ex);
+            return null;
+        }
+    }
+
+    private static ImageSource? LoadCachedIcon(string path)
+    {
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.UriSource = new Uri(path, UriKind.Absolute);
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error($"Failed to read cached app icon {path}", ex);
+            return null;
+        }
+    }
+
+    private void SaveCachedIcon(ImageSource image, string path)
+    {
+        string? tempPath = null;
+        try
+        {
+            Directory.CreateDirectory(_appIconCacheDirectory);
+            tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create((BitmapSource)image));
+                encoder.Save(stream);
+            }
+
+            File.Move(tempPath, path, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error($"Failed to cache app icon {path}", ex);
+        }
+        finally
+        {
+            if (tempPath != null && File.Exists(tempPath))
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Error($"Failed to remove temporary icon cache file {tempPath}", ex);
+                }
+            }
+        }
+    }
+
+    private static ImageSource? ExtractAppIcon(string exePath)
+    {
+        try
+        {
+            using var icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
+            if (icon == null)
+                return null;
+
+            var source = Imaging.CreateBitmapSourceFromHIcon(
+                icon.Handle, System.Windows.Int32Rect.Empty,
+                BitmapSizeOptions.FromWidthAndHeight(48, 48));
+            source.Freeze();
+            return source;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error($"Failed to extract app icon from {exePath}", ex);
+            return null;
+        }
+    }
 
     public ImageSource? SystemVolumeIcon => _systemIcon ??= LoadAppIconResource();
 

@@ -3,7 +3,7 @@ using System.Text;
 
 namespace SmartVol.Services;
 
-public sealed record ForegroundApp(int Pid, string ProcessName, string WindowTitle);
+public sealed record ForegroundApp(int Pid, long ProcessStartTimeUtcTicks, string ProcessName, string WindowTitle);
 public sealed record ForegroundWindowSnapshot(IntPtr Handle, int Pid);
 
 internal static class ForegroundAppService
@@ -37,7 +37,17 @@ internal static class ForegroundAppService
         {
             using var process = Process.GetProcessById(snapshot.Pid);
             string name = process.ProcessName + ".exe";
-            return new ForegroundApp(snapshot.Pid, name, title);
+            long startTimeTicks = 0;
+            try
+            {
+                startTimeTicks = process.StartTime.ToUniversalTime().Ticks;
+            }
+            catch
+            {
+                // Some protected processes do not expose their start time.
+            }
+
+            return new ForegroundApp(snapshot.Pid, startTimeTicks, name, title);
         }
         catch
         {

@@ -15,6 +15,7 @@ public partial class OverlayWindow : Window
 
     private readonly DispatcherTimer _hideTimer;
     private bool _fading;
+    private int? _currentAppPid;
 
     static OverlayWindow()
     {
@@ -39,21 +40,36 @@ public partial class OverlayWindow : Window
         NativeMethods.SetWindowLong(handle, NativeMethods.GWL_EXSTYLE, style | NativeMethods.WS_EX_TOOLWINDOW);
     }
 
-    public void ShowAppVolume(string appName, string windowTitle, ImageSource? icon, double fraction, AppConfig config) =>
+    public void ShowAppVolume(int processId, string appName, string windowTitle, ImageSource? icon, double fraction, AppConfig config) =>
         Show(appName, string.IsNullOrWhiteSpace(windowTitle) ? "Per-app volume" : windowTitle,
-            icon, fraction, warning: null, config);
+            icon, fraction, warning: null, config, processId);
 
-    public void ShowNoSession(string appName, string windowTitle, ImageSource? icon, AppConfig config) =>
+    public void ShowNoSession(int processId, string appName, string windowTitle, ImageSource? icon, AppConfig config) =>
         Show(appName, string.IsNullOrWhiteSpace(windowTitle) ? "Per-app volume" : windowTitle,
-            icon, 0, "No audio session for this window", config);
+            icon, 0, "No audio session for this window", config, processId);
 
     public void ShowSystemVolume(double fraction, ImageSource? icon, AppConfig config) =>
         Show("System Volume", "Global output", icon, fraction, warning: null, config);
 
-    private void Show(string title, string subtitle, ImageSource? icon, double fraction, string? warning, AppConfig config)
+    public void SetAppIcon(int processId, ImageSource icon)
+    {
+        if (IsVisible && _currentAppPid == processId)
+            AppIconImg.Source = icon;
+    }
+
+    private void Show(
+        string title,
+        string subtitle,
+        ImageSource? icon,
+        double fraction,
+        string? warning,
+        AppConfig config,
+        int? processId = null)
     {
         try
         {
+            int? previousAppPid = _currentAppPid;
+            _currentAppPid = processId;
             if (_fading)
             {
                 BeginAnimation(OpacityProperty, null);
@@ -75,7 +91,8 @@ public partial class OverlayWindow : Window
             AppNameText.Text = string.IsNullOrWhiteSpace(title) ? "Unknown app" : title;
             SubtitleText.Text = warning ?? subtitle;
             SubtitleText.Foreground = warning != null ? WarningBrush : SubtitleBrush;
-            AppIconImg.Source = icon;
+            if (icon != null || previousAppPid != processId)
+                AppIconImg.Source = icon;
 
             double clamped = Math.Clamp(fraction, 0, 1);
             PercentText.Text = warning != null ? "—" : ((int)Math.Round(clamped * 100)) + "%";

@@ -15,6 +15,8 @@ public sealed class VolumeController
     private readonly AppConfig _config;
     private readonly object _appAdjustmentLock = new();
     private readonly LinkedList<AppAdjustmentRequest> _appAdjustmentQueue = new();
+    private readonly Dictionary<(int Pid, long StartTimeTicks), System.Windows.Media.ImageSource> _appIcons = new();
+    private readonly HashSet<(int Pid, long StartTimeTicks)> _appIconLoadsInProgress = new();
     private bool _appAdjustmentWorkerRunning;
 
     public VolumeController(OverlayWindow overlay, AudioService audio, AppConfig config)
@@ -105,26 +107,68 @@ public sealed class VolumeController
                 bool hasSession = _audio.TryAdjustAppVolume(
                     foreground.Pid, foreground.ProcessName, request.Delta,
                     out double volume, out bool adjusted) && adjusted;
+                var processKey = (foreground.Pid, foreground.ProcessStartTimeUtcTicks);
+                System.Windows.Media.ImageSource? icon;
+                bool requestIcon;
+                lock (_appAdjustmentLock)
+                {
+                    _appIcons.TryGetValue(processKey, out icon);
+                    requestIcon = icon == null && _appIconLoadsInProgress.Add(processKey);
+                }
 
                 _ = _overlay.Dispatcher.BeginInvoke(() =>
                 {
                     if (hasSession)
                     {
                         _overlay.ShowAppVolume(
-                            foreground.ProcessName, foreground.WindowTitle,
-                            null, volume, _config);
+                            foreground.Pid, foreground.ProcessName, foreground.WindowTitle,
+                            icon, volume, _config);
                     }
                     else
                     {
                         _overlay.ShowNoSession(
-                            foreground.ProcessName, foreground.WindowTitle,
-                            null, _config);
+                            foreground.Pid, foreground.ProcessName, foreground.WindowTitle,
+                            icon, _config);
                     }
                 });
+
+                if (requestIcon)
+                    _ = LoadAndApplyAppIconAsync(foreground);
             }
             catch (Exception ex)
             {
                 AppLogger.Error("Asynchronous app volume adjustment failed", ex);
+            }
+        }
+    }
+
+    private async Task LoadAndApplyAppIconAsync(ForegroundApp foreground)
+    {
+        try
+        {
+            var icon = await _audio.GetAppIconAsync(
+                foreground.Pid, foreground.ProcessStartTimeUtcTicks).ConfigureAwait(false);
+            if (icon != null)
+            {
+                lock (_appAdjustmentLock)
+                {
+                    _appIcons[(foreground.Pid, foreground.ProcessStartTimeUtcTicks)] = icon;
+                }
+
+                _ = _overlay.Dispatcher.BeginInvoke(
+                    () => _overlay.SetAppIcon(foreground.Pid, icon));
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error($"Asynchronous app icon update failed for pid={foreground.Pid}", ex);
+        }
+        finally
+        {
+            lock (_appAdjustmentLock)
+            {
+                _appIconLoadsInProgress.Remove(
+                    (foreground.Pid, foreground.ProcessStartTimeUtcTicks));
             }
         }
     }
