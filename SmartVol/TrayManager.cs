@@ -6,9 +6,8 @@ namespace SmartVol;
 
 /// <summary>
 /// System-tray icon with output-device switching, hotkey repair, settings and exit.
-/// Fix vs the Python version: refreshing the device list rebuilds only the menu
-/// (atomic swap) instead of destroying and recreating the whole tray icon, so the
-/// icon can never disappear or duplicate after a device change.
+/// Refreshing the device list rebuilds only the menu (atomic swap) instead of
+/// destroying and recreating the whole tray icon.
 /// </summary>
 public sealed class TrayManager : IDisposable
 {

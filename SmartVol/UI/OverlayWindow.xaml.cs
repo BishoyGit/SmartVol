@@ -125,8 +125,7 @@ public partial class OverlayWindow : Window
     }
 
     /// <summary>
-    /// Bottom-center of the monitor that owns the foreground window (fix vs the
-    /// Python version, which always used the primary screen), DPI-aware.
+    /// Bottom-center of the monitor that owns the foreground window, DPI-aware.
     /// </summary>
     private void PositionOnActiveMonitor()
     {

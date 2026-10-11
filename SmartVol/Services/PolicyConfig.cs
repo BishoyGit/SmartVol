@@ -4,9 +4,8 @@ namespace SmartVol.Services;
 
 /// <summary>
 /// Sets the default audio endpoint through the IPolicyConfig COM API.
-/// Fix vs the Python version: the default is applied to all three roles
-/// (Console, Multimedia, Communications) so a switch reliably affects
-/// games, media players and chat apps instead of only Console-role streams.
+/// The default is applied to all three roles (Console, Multimedia,
+/// Communications) so a switch affects games, media players, and chat apps.
 /// </summary>
 internal static class DefaultDevicePolicy
 {

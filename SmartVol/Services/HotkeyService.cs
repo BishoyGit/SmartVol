@@ -17,9 +17,8 @@ public sealed record HotkeyRule(VolumeAction Action, int Key, int[] Modifiers);
 /// <summary>
 /// Low-level keyboard hook that intercepts user-configured hotkeys and
 /// suppresses them so the foreground app never sees the keypress.
-/// Replaces the Python 'keyboard' package hook (which needed two watchdogs):
-/// WH_KEYBOARD_LL is OS-maintained, and a lightweight 3s timer only resyncs
-/// stuck keys and reinstalls the hook if it ever goes missing.
+/// WH_KEYBOARD_LL is OS-maintained, and a lightweight 3s timer resyncs stuck
+/// keys and reinstalls the hook if it ever goes missing.
 /// </summary>
 public sealed class HotkeyService : IDisposable
 {

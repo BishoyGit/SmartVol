@@ -12,9 +12,8 @@ public sealed record AudioDeviceInfo(string Id, string FriendlyName);
 
 /// <summary>
 /// All CoreAudio access (per-app sessions, master volume, device list, icons).
-/// Bug fixes vs the Python version: single session enumeration with an in-loop
-/// name fallback (no double pass), expired sessions are skipped up-front, and
-/// per-app icons come from a locked cache that also remembers misses.
+/// Session enumeration skips expired sessions up-front and uses an in-loop
+/// name fallback. Per-app icons come from a locked cache that remembers misses.
 /// </summary>
 public sealed class AudioService
 {

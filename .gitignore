@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+/publish/
+/build/
+/dist/
+/__pycache__/
+/SmartVolCSharp/
+settings.json
+smartvol.log*
