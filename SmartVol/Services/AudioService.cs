@@ -6,6 +6,7 @@ using System.Text;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.ComponentModel;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 
@@ -220,7 +221,19 @@ public sealed class AudioService
                 }
             }
 
-            string? exePath = process.MainModule?.FileName;
+            string? exePath = null;
+            try
+            {
+                exePath = process.MainModule?.FileName;
+            }
+            catch
+            {
+                // Protected games can deny module enumeration while allowing a limited path query.
+            }
+
+            if (string.IsNullOrWhiteSpace(exePath))
+                exePath = GetProcessImagePath(pid);
+
             if (string.IsNullOrWhiteSpace(exePath))
                 return null;
 
@@ -255,6 +268,21 @@ public sealed class AudioService
             AppLogger.Error($"Failed to load app icon for pid={pid}", ex);
             return null;
         }
+    }
+
+    private static string? GetProcessImagePath(int pid)
+    {
+        using var process = NativeMethods.OpenProcess(
+            NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (process.IsInvalid)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), $"Could not open process {pid} for image-path query.");
+
+        var path = new StringBuilder(32768);
+        uint size = (uint)path.Capacity;
+        if (!NativeMethods.QueryFullProcessImageName(process, 0, path, ref size))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), $"Could not query image path for process {pid}.");
+
+        return path.ToString();
     }
 
     private static ImageSource? LoadCachedIcon(string path)
