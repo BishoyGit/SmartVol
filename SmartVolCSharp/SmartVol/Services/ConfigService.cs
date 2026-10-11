@@ -10,6 +10,7 @@ public sealed class AppConfig
     public int OverlayDurationMs { get; set; } = 1300;
     public double OverlayOpacity { get; set; } = 0.92;
     public bool RunAtStartup { get; set; } = false;
+    public Dictionary<string, HotkeyBinding> Hotkeys { get; set; } = HotkeyBindings.DefaultConfig();
 
     public void Normalize()
     {
@@ -21,6 +22,28 @@ public sealed class AppConfig
             .Select(id => id.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        // Backward compatible: files saved before custom hotkeys existed
+        // simply miss this section and keep the classic defaults.
+        var defaults = HotkeyBindings.DefaultConfig();
+        Hotkeys ??= new Dictionary<string, HotkeyBinding>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, fallback) in defaults)
+        {
+            if (!Hotkeys.TryGetValue(name, out var binding) ||
+                binding == null || binding.Key == 0 ||
+                HotkeyBindings.IsModifierVk(binding.Key))
+            {
+                Hotkeys[name] = fallback;
+            }
+            else
+            {
+                binding.Modifiers = binding.Modifiers
+                    .Where(HotkeyBindings.IsModifierVk)
+                    .Distinct()
+                    .OrderBy(HotkeyBindings.ModifierSortOrder)
+                    .ToList();
+            }
+        }
     }
 }
 

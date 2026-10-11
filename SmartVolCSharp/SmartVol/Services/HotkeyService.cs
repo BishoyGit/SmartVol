@@ -11,12 +11,15 @@ public enum VolumeAction
     SystemDown,
 }
 
+/// <summary>A validated hotkey rule: main key + required modifier VKs.</summary>
+public sealed record HotkeyRule(VolumeAction Action, int Key, int[] Modifiers);
+
 /// <summary>
-/// Low-level keyboard hook that intercepts Right Ctrl + Arrow combinations and
+/// Low-level keyboard hook that intercepts user-configured hotkeys and
 /// suppresses them so the foreground app never sees the keypress.
 /// Replaces the Python 'keyboard' package hook (which needed two watchdogs):
-/// WH_KEYBOARD_LL is OS-maintained, and a lightweight 3s timer only clears a
-/// stuck modifier flag and reinstalls the hook if it ever goes missing.
+/// WH_KEYBOARD_LL is OS-maintained, and a lightweight 3s timer only resyncs
+/// stuck keys and reinstalls the hook if it ever goes missing.
 /// </summary>
 public sealed class HotkeyService : IDisposable
 {
@@ -25,11 +28,6 @@ public sealed class HotkeyService : IDisposable
     private const int WmSyskeydown = 0x0104;
     private const int WmKeyup = 0x0101;
     private const int WmSyskeyup = 0x0105;
-    private const int VkRcontrol = 0xA3;
-    private const int VkUp = 0x26;
-    private const int VkDown = 0x28;
-    private const int VkLeft = 0x25;
-    private const int VkRight = 0x27;
 
     private delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
 
@@ -51,9 +49,11 @@ public sealed class HotkeyService : IDisposable
 
     private readonly Action<VolumeAction> _onAction;
     private readonly System.Threading.Timer _healthTimer;
+    private readonly HashSet<int> _downModifiers = new();
+    private readonly object _keysLock = new();
+    private Dictionary<int, List<HotkeyRule>> _rulesByKey = new();
     private HookProc? _proc;
     private IntPtr _hookId = IntPtr.Zero;
-    private volatile bool _rightCtrlDown;
     private bool _disposed;
 
     public HotkeyService(Action<VolumeAction> onAction)
@@ -61,6 +61,42 @@ public sealed class HotkeyService : IDisposable
         _onAction = onAction;
         _healthTimer = new System.Threading.Timer(
             _ => HealthCheck(), null, Timeout.Infinite, Timeout.Infinite);
+    }
+
+    /// <summary>
+    /// Replaces the active hotkey rules (e.g. after the user saves settings).
+    /// Safe to call at any time; only clears pressed-key tracking.
+    /// </summary>
+    public void SetBindings(IEnumerable<HotkeyRule> rules)
+    {
+        var map = new Dictionary<int, List<HotkeyRule>>();
+        int count = 0;
+        foreach (var rule in rules)
+        {
+            if (rule.Key == 0 || HotkeyBindings.IsModifierVk(rule.Key))
+                continue;
+            var modifiers = rule.Modifiers
+                .Where(HotkeyBindings.IsModifierVk)
+                .Distinct()
+                .ToArray();
+            var clean = rule with { Modifiers = modifiers };
+            if (!map.TryGetValue(clean.Key, out var list))
+            {
+                list = new List<HotkeyRule>();
+                map[clean.Key] = list;
+            }
+
+            list.Add(clean);
+            count++;
+        }
+
+        _rulesByKey = map;
+        lock (_keysLock)
+        {
+            _downModifiers.Clear();
+        }
+
+        AppLogger.Info($"Hotkey bindings updated ({count} rules)");
     }
 
     public void Start()
@@ -94,7 +130,7 @@ public sealed class HotkeyService : IDisposable
         if (_hookId == IntPtr.Zero)
             AppLogger.Error($"SetWindowsHookEx failed (win32={Marshal.GetLastWin32Error()})");
         else
-            AppLogger.Info("Keyboard hook installed (Right Ctrl + Arrows)");
+            AppLogger.Info("Keyboard hook installed");
     }
 
     private void Uninstall()
@@ -106,15 +142,22 @@ public sealed class HotkeyService : IDisposable
         }
 
         _proc = null;
-        _rightCtrlDown = false;
+        lock (_keysLock)
+        {
+            _downModifiers.Clear();
+        }
     }
 
     private void HealthCheck()
     {
         try
         {
-            if (_rightCtrlDown && (GetAsyncKeyState(VkRcontrol) & 0x8000) == 0)
-                _rightCtrlDown = false; // key-up was missed (focus change) — unstick
+            // A key-up delivered while focus changed elsewhere leaves a stuck
+            // modifier — drop anything not physically down anymore.
+            lock (_keysLock)
+            {
+                _downModifiers.RemoveWhere(vk => (GetAsyncKeyState(vk) & 0x8000) == 0);
+            }
 
             if (_hookId == IntPtr.Zero && !_disposed)
             {
@@ -137,44 +180,70 @@ public sealed class HotkeyService : IDisposable
             bool keyDown = msg == WmKeydown || msg == WmSyskeydown;
             bool keyUp = msg == WmKeyup || msg == WmSyskeyup;
 
-            if (vk == VkRcontrol)
+            if (HotkeyBindings.IsModifierVk(vk))
             {
-                if (keyDown)
-                    _rightCtrlDown = true;
-                else if (keyUp)
-                    _rightCtrlDown = false;
-            }
-            else if (keyDown && (vk == VkUp || vk == VkDown || vk == VkLeft || vk == VkRight))
-            {
-                // Physical-state fallback covers a Ctrl press that landed
-                // before the hook was installed.
-                bool combo = _rightCtrlDown || (GetAsyncKeyState(VkRcontrol) & 0x8000) != 0;
-                if (combo)
+                lock (_keysLock)
                 {
-                    _rightCtrlDown = true;
-                    VolumeAction action = vk switch
-                    {
-                        VkUp => VolumeAction.AppUp,
-                        VkDown => VolumeAction.AppDown,
-                        VkRight => VolumeAction.SystemUp,
-                        _ => VolumeAction.SystemDown,
-                    };
+                    if (keyDown)
+                        _downModifiers.Add(vk);
+                    else if (keyUp)
+                        _downModifiers.Remove(vk);
+                }
+            }
+            else if (keyDown && _rulesByKey.TryGetValue(vk, out var rules))
+            {
+                foreach (var rule in rules)
+                {
+                    if (!ModifiersMatch(rule.Modifiers))
+                        continue;
 
                     try
                     {
-                        _onAction(action);
+                        _onAction(rule.Action);
                     }
                     catch (Exception ex)
                     {
                         AppLogger.Error("Hotkey action failed", ex);
                     }
 
-                    return (IntPtr)1; // suppress: plain arrows keep working everywhere else
+                    return (IntPtr)1; // suppress: the key never reaches the foreground app
                 }
             }
         }
 
         return CallNextHookEx(_hookId, nCode, wParam, lParam);
+    }
+
+    private bool ModifiersMatch(int[] required)
+    {
+        // Every required modifier must be down (tracked state with a physical
+        // fallback for presses that landed before the hook was installed),
+        // and no other modifier may be down — standard exact-match behavior
+        // so e.g. Ctrl+Shift+A never fires a Ctrl+A binding by accident.
+        foreach (int mod in required)
+        {
+            if (!IsDown(mod))
+                return false;
+        }
+
+        foreach (int mod in HotkeyBindings.AllModifierVks)
+        {
+            if (!required.Contains(mod) && IsDown(mod))
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool IsDown(int vk)
+    {
+        lock (_keysLock)
+        {
+            if (_downModifiers.Contains(vk))
+                return true;
+        }
+
+        return (GetAsyncKeyState(vk) & 0x8000) != 0;
     }
 
     public void Dispose()

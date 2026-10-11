@@ -173,14 +173,14 @@
                     </ListBox>
                 </Border>
 
-                <TextBlock Text="Shortcuts" Style="{StaticResource SectionHeader}"/>
+                <TextBlock Text="Hotkeys" Style="{StaticResource SectionHeader}"/>
                 <TextBlock Style="{StaticResource SectionHint}">
-                    Hold RIGHT CTRL and press an arrow key. Plain arrow keys keep working normally everywhere else.
+                    Click a shortcut, then press the new keys — any combination of Ctrl, Shift, Alt, Win (left or right) plus any key. Esc cancels.
                 </TextBlock>
                 <Border CornerRadius="10" BorderThickness="1" BorderBrush="#3A3A41" Background="#26262B" Padding="12,10">
                     <Grid>
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="170"/>
+                            <ColumnDefinition Width="150"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
                         <Grid.RowDefinitions>
@@ -189,16 +189,23 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
-                        <TextBlock Text="Right Ctrl + ↑" Foreground="#7DD3FC" FontWeight="SemiBold" FontSize="12.5" Margin="0,2"/>
-                        <TextBlock Text="Raise focused app's volume" Grid.Column="1" FontSize="12.5" Foreground="#EDEDEF" Margin="0,2"/>
-                        <TextBlock Text="Right Ctrl + ↓" Grid.Row="1" Foreground="#7DD3FC" FontWeight="SemiBold" FontSize="12.5" Margin="0,2"/>
-                        <TextBlock Text="Lower focused app's volume" Grid.Row="1" Grid.Column="1" FontSize="12.5" Foreground="#EDEDEF" Margin="0,2"/>
-                        <TextBlock Text="Right Ctrl + →" Grid.Row="2" Foreground="#7DD3FC" FontWeight="SemiBold" FontSize="12.5" Margin="0,2"/>
-                        <TextBlock Text="Raise system volume" Grid.Row="2" Grid.Column="1" FontSize="12.5" Foreground="#EDEDEF" Margin="0,2"/>
-                        <TextBlock Text="Right Ctrl + ←" Grid.Row="3" Foreground="#7DD3FC" FontWeight="SemiBold" FontSize="12.5" Margin="0,2"/>
-                        <TextBlock Text="Lower system volume" Grid.Row="3" Grid.Column="1" FontSize="12.5" Foreground="#EDEDEF" Margin="0,2"/>
+                        <TextBlock Text="App volume up" FontSize="12.5" Foreground="#EDEDEF" VerticalAlignment="Center" Margin="0,4"/>
+                        <Button x:Name="AppUpButton" Tag="AppUp" Grid.Column="1" FontSize="12.5"
+                                Style="{StaticResource SecondaryButton}" Margin="0,4" Click="OnHotkeyButtonClick"/>
+                        <TextBlock Text="App volume down" Grid.Row="1" FontSize="12.5" Foreground="#EDEDEF" VerticalAlignment="Center" Margin="0,4"/>
+                        <Button x:Name="AppDownButton" Tag="AppDown" Grid.Row="1" Grid.Column="1" FontSize="12.5"
+                                Style="{StaticResource SecondaryButton}" Margin="0,4" Click="OnHotkeyButtonClick"/>
+                        <TextBlock Text="System volume up" Grid.Row="2" FontSize="12.5" Foreground="#EDEDEF" VerticalAlignment="Center" Margin="0,4"/>
+                        <Button x:Name="SystemUpButton" Tag="SystemUp" Grid.Row="2" Grid.Column="1" FontSize="12.5"
+                                Style="{StaticResource SecondaryButton}" Margin="0,4" Click="OnHotkeyButtonClick"/>
+                        <TextBlock Text="System volume down" Grid.Row="3" FontSize="12.5" Foreground="#EDEDEF" VerticalAlignment="Center" Margin="0,4"/>
+                        <Button x:Name="SystemDownButton" Tag="SystemDown" Grid.Row="3" Grid.Column="1" FontSize="12.5"
+                                Style="{StaticResource SecondaryButton}" Margin="0,4" Click="OnHotkeyButtonClick"/>
                     </Grid>
                 </Border>
+                <TextBlock Style="{StaticResource SectionHint}" Margin="0,6,0,0">
+                    Tip: keep at least one modifier so normal typing is never blocked. Only the exact combination is captured — everything else keeps working.
+                </TextBlock>
             </StackPanel>
         </ScrollViewer>
     </DockPanel>

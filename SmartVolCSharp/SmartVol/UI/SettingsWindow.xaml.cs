@@ -1,7 +1,10 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Input;
 using SmartVol.Services;
+using Button = System.Windows.Controls.Button;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 
 namespace SmartVol.UI;
 
@@ -30,12 +33,24 @@ public sealed class DeviceRow : INotifyPropertyChanged
 
 public partial class SettingsWindow : Window
 {
+    private static readonly string[] HotkeyActions =
+    [
+        HotkeyBindings.AppUp, HotkeyBindings.AppDown,
+        HotkeyBindings.SystemUp, HotkeyBindings.SystemDown,
+    ];
+
+    private static readonly System.Windows.Media.SolidColorBrush ArmedBrush =
+        new(System.Windows.Media.Color.FromRgb(0x6D, 0x28, 0xD9));
+
     private readonly ConfigService _configService;
     private readonly AppConfig _config;
     private readonly AudioService _audio;
     private readonly Action _onChanged;
     private readonly ObservableCollection<DeviceRow> _devices = new();
+    private readonly Dictionary<string, HotkeyBinding> _pendingHotkeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<int> _captureMods = new();
     private bool _loading;
+    private string? _captureAction;
 
     public SettingsWindow(ConfigService configService, AppConfig config, AudioService audio, Action onChanged)
     {
@@ -46,9 +61,12 @@ public partial class SettingsWindow : Window
 
         InitializeComponent();
         DeviceList.ItemsSource = _devices;
+        PreviewKeyDown += OnCaptureKeyDown;
+        PreviewKeyUp += OnCaptureKeyUp;
         Loaded += (_, _) =>
         {
             LoadGeneral();
+            LoadHotkeys();
             RefreshDevices();
         };
     }
@@ -67,6 +85,180 @@ public partial class SettingsWindow : Window
         finally
         {
             _loading = false;
+        }
+    }
+
+    private void LoadHotkeys()
+    {
+        _pendingHotkeys.Clear();
+        var defaults = HotkeyBindings.DefaultConfig();
+        foreach (string action in HotkeyActions)
+        {
+            if (_config.Hotkeys.TryGetValue(action, out var binding) &&
+                binding != null && binding.Key != 0 &&
+                !HotkeyBindings.IsModifierVk(binding.Key))
+            {
+                _pendingHotkeys[action] = binding.Clone();
+            }
+            else
+            {
+                _pendingHotkeys[action] = defaults[action].Clone();
+            }
+        }
+
+        UpdateHotkeyButtons();
+    }
+
+    private Button GetHotkeyButton(string action) => action switch
+    {
+        HotkeyBindings.AppUp => AppUpButton,
+        HotkeyBindings.AppDown => AppDownButton,
+        HotkeyBindings.SystemUp => SystemUpButton,
+        HotkeyBindings.SystemDown => SystemDownButton,
+        _ => throw new ArgumentOutOfRangeException(nameof(action)),
+    };
+
+    private void UpdateHotkeyButtons()
+    {
+        foreach (string action in HotkeyActions)
+        {
+            var button = GetHotkeyButton(action);
+            if (button == null)
+                continue; // InitializeComponent still in progress
+
+            if (_captureAction == action)
+            {
+                string mods = _captureMods.Count == 0
+                    ? string.Empty
+                    : string.Join(" + ", _captureMods
+                        .OrderBy(HotkeyBindings.ModifierSortOrder)
+                        .Select(HotkeyBindings.KeyName)) + " + …";
+                button.Content = string.IsNullOrEmpty(mods)
+                    ? "Press keys…  (Esc cancels)"
+                    : mods + "  (Esc cancels)";
+                button.Background = ArmedBrush;
+            }
+            else
+            {
+                _pendingHotkeys.TryGetValue(action, out var binding);
+                button.Content = HotkeyBindings.ToDisplayString(binding);
+                button.ClearValue(Button.BackgroundProperty);
+            }
+        }
+    }
+
+    private void OnHotkeyButtonClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.Tag is not string action)
+            return;
+
+        // Click again to cancel an armed capture.
+        if (_captureAction == action)
+            DisarmCapture();
+        else
+            ArmCapture(action);
+    }
+
+    private void ArmCapture(string action)
+    {
+        _captureAction = action;
+        _captureMods.Clear();
+        UpdateHotkeyButtons();
+    }
+
+    private void DisarmCapture()
+    {
+        _captureAction = null;
+        _captureMods.Clear();
+        UpdateHotkeyButtons();
+    }
+
+    private void OnCaptureKeyDown(object sender, KeyEventArgs e)
+    {
+        if (_captureAction == null || e.Key == Key.None || e.Key == Key.ImeProcessed)
+            return;
+
+        Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key == Key.None)
+            return;
+
+        if (key == Key.Escape)
+        {
+            DisarmCapture();
+            e.Handled = true;
+            return;
+        }
+
+        int vk;
+        try
+        {
+            vk = KeyInterop.VirtualKeyFromKey(key);
+        }
+        catch
+        {
+            return;
+        }
+
+        if (HotkeyBindings.IsModifierVk(vk))
+        {
+            _captureMods.Add(vk);
+            UpdateHotkeyButtons();
+            e.Handled = true;
+            return;
+        }
+
+        if (vk == 0 || e.IsRepeat)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        var binding = new HotkeyBinding
+        {
+            Modifiers = _captureMods
+                .OrderBy(HotkeyBindings.ModifierSortOrder)
+                .ToList(),
+            Key = vk,
+        };
+
+        foreach (var (name, existing) in _pendingHotkeys)
+        {
+            if (name != _captureAction && HotkeyBindings.SameBinding(existing, binding))
+            {
+                System.Windows.MessageBox.Show(
+                    $"That combination is already used for “{HotkeyBindings.DisplayActionName(name)}”.\nPick a different one.",
+                    "SmartVol", MessageBoxButton.OK, MessageBoxImage.Warning);
+                e.Handled = true;
+                return;
+            }
+        }
+
+        _pendingHotkeys[_captureAction] = binding;
+        AppLogger.Info($"Hotkey captured for {_captureAction}: {HotkeyBindings.ToDisplayString(binding)}");
+        DisarmCapture();
+        e.Handled = true;
+    }
+
+    private void OnCaptureKeyUp(object sender, KeyEventArgs e)
+    {
+        if (_captureAction == null)
+            return;
+
+        Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+        int vk;
+        try
+        {
+            vk = KeyInterop.VirtualKeyFromKey(key);
+        }
+        catch
+        {
+            return;
+        }
+
+        if (HotkeyBindings.IsModifierVk(vk) && _captureMods.Remove(vk))
+        {
+            UpdateHotkeyButtons();
+            e.Handled = true;
         }
     }
 
@@ -154,10 +346,15 @@ public partial class SettingsWindow : Window
     {
         try
         {
+            DisarmCapture();
+
             _config.Step = StepSlider.Value / 100.0;
             _config.OverlayDurationMs = (int)DurationSlider.Value;
             _config.OverlayOpacity = OpacitySlider.Value / 100.0;
             _config.RunAtStartup = StartupCheck.IsChecked == true;
+            _config.Hotkeys = _pendingHotkeys.ToDictionary(
+                kv => kv.Key, kv => kv.Value.Clone(),
+                StringComparer.OrdinalIgnoreCase);
 
             StartupService.SetEnabled(_config.RunAtStartup);
             _configService.Save(_config);
@@ -171,5 +368,9 @@ public partial class SettingsWindow : Window
         Close();
     }
 
-    private void OnCancel(object sender, RoutedEventArgs e) => Close();
+    private void OnCancel(object sender, RoutedEventArgs e)
+    {
+        DisarmCapture();
+        Close();
+    }
 }

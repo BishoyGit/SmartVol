@@ -3,7 +3,9 @@
 Per-application + global volume control with an on-screen overlay.
 C# port of `../main.py` — same behavior, professional UI, no Python runtime needed.
 
-Hold **RIGHT CTRL** and press:
+Every hotkey is user-configurable (tray → Settings → Hotkeys: click a
+shortcut, then press any combination of Ctrl / Shift / Alt / Win plus any
+key). The defaults are:
 
 | Keys | Action |
 | ---- | ------ |
@@ -52,13 +54,24 @@ is compatible with the Python version's file:
   "Step": 0.05,
   "OverlayDurationMs": 1300,
   "OverlayOpacity": 0.92,
-  "RunAtStartup": false
+  "RunAtStartup": false,
+  "Hotkeys": {
+    "AppUp": { "Modifiers": [163], "Key": 38 },
+    "AppDown": { "Modifiers": [163], "Key": 40 },
+    "SystemUp": { "Modifiers": [163], "Key": 39 },
+    "SystemDown": { "Modifiers": [163], "Key": 37 }
+  }
 }
 ```
 
+`Modifiers`/`Key` are virtual-key codes (163 = Right Ctrl, 37–40 = arrows).
+Only the exact combination fires; everything else passes through untouched.
+Files saved before custom hotkeys existed simply miss the section and keep
+the classic Right Ctrl + Arrows defaults.
+
 Everything is also editable in the Settings window (tray → Settings):
-volume step (1–20%), overlay duration/opacity, run-at-startup, and the
-per-device tray visibility list (applies instantly).
+volume step (1–20%), overlay duration/opacity, run-at-startup, all four
+hotkeys, and the per-device tray visibility list (applies instantly).
 
 ## Project layout
 
