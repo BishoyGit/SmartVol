@@ -1,6 +1,4 @@
-using System.IO;
 using System.Runtime.InteropServices;
-using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using NAudio.CoreAudioApi;
@@ -11,14 +9,12 @@ namespace SmartVol.Services;
 public sealed record AudioDeviceInfo(string Id, string FriendlyName);
 
 /// <summary>
-/// All CoreAudio access (per-app sessions, master volume, device list, icons).
+/// All CoreAudio access (per-app sessions, master volume, and device list).
 /// Session enumeration skips expired sessions up-front and uses an in-loop
-/// name fallback. Per-app icons come from a locked cache that remembers misses.
+/// name fallback.
 /// </summary>
 public sealed class AudioService
 {
-    private readonly Dictionary<string, ImageSource?> _iconCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly object _iconLock = new();
     private ImageSource? _systemIcon;
 
     private static float Clamp01(float value) => value < 0f ? 0f : value > 1f ? 1f : value;
@@ -36,7 +32,7 @@ public sealed class AudioService
             using var sessions = sessionManager.Sessions;
 
             AudioSessionControl? target = null;
-            AudioSessionControl? nameFallback = null;
+            var fallbackSessions = new List<(AudioSessionControl Session, uint Pid)>();
 
             for (int i = 0; i < sessions.Count; i++)
             {
@@ -60,14 +56,21 @@ public sealed class AudioService
                     break;
                 }
 
-                if (nameFallback == null && !string.IsNullOrEmpty(processName) &&
-                    string.Equals(GetSessionProcessName(sessionPid), processName, StringComparison.OrdinalIgnoreCase))
+                fallbackSessions.Add((session, sessionPid));
+            }
+
+            if (target == null && !string.IsNullOrEmpty(processName))
+            {
+                foreach (var entry in fallbackSessions)
                 {
-                    nameFallback = session;
+                    if (string.Equals(GetSessionProcessName(entry.Pid), processName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        target = entry.Session;
+                        break;
+                    }
                 }
             }
 
-            target ??= nameFallback;
             if (target == null)
                 return false;
 
@@ -157,43 +160,6 @@ public sealed class AudioService
 
     public void SetDefaultDevice(string deviceId) =>
         DefaultDevicePolicy.SetDefaultEndpoint(deviceId);
-
-    public ImageSource? GetAppIcon(string? exePath)
-    {
-        if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
-            return null;
-
-        lock (_iconLock)
-        {
-            if (_iconCache.TryGetValue(exePath, out var cached))
-                return cached;
-        }
-
-        ImageSource? image = null;
-        try
-        {
-            using var icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
-            if (icon != null)
-            {
-                var source = Imaging.CreateBitmapSourceFromHIcon(
-                    icon.Handle, System.Windows.Int32Rect.Empty,
-                    BitmapSizeOptions.FromWidthAndHeight(48, 48));
-                source.Freeze();
-                image = source;
-            }
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error($"GetAppIcon failed for {exePath}", ex);
-        }
-
-        lock (_iconLock)
-        {
-            _iconCache[exePath] = image;
-        }
-
-        return image;
-    }
 
     public ImageSource? SystemVolumeIcon => _systemIcon ??= LoadAppIconResource();
 

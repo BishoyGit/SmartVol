@@ -3,11 +3,12 @@ using System.Text;
 
 namespace SmartVol.Services;
 
-public sealed record ForegroundApp(int Pid, string ProcessName, string? ExePath, string WindowTitle);
+public sealed record ForegroundApp(int Pid, string ProcessName, string WindowTitle);
+public sealed record ForegroundWindowSnapshot(IntPtr Handle, int Pid);
 
 internal static class ForegroundAppService
 {
-    public static ForegroundApp? GetForeground()
+    public static ForegroundWindowSnapshot? CaptureForegroundWindow()
     {
         try
         {
@@ -19,33 +20,28 @@ internal static class ForegroundAppService
             if (pid == 0)
                 return null;
 
-            string title = GetWindowTitle(hwnd);
-
-            try
-            {
-                using var process = Process.GetProcessById((int)pid);
-                string name = process.ProcessName + ".exe";
-                string? path = null;
-                try
-                {
-                    path = process.MainModule?.FileName;
-                }
-                catch
-                {
-                    // Protected / elevated processes hide their module info.
-                }
-
-                return new ForegroundApp((int)pid, name, path, title);
-            }
-            catch
-            {
-                // Process exited between the foreground query and the lookup.
-                return null;
-            }
+            return new ForegroundWindowSnapshot(hwnd, (int)pid);
         }
         catch (Exception ex)
         {
-            AppLogger.Error("GetForeground failed", ex);
+            AppLogger.Error("CaptureForegroundWindow failed", ex);
+            return null;
+        }
+    }
+
+    public static ForegroundApp? GetForeground(ForegroundWindowSnapshot snapshot)
+    {
+        string title = GetWindowTitle(snapshot.Handle);
+
+        try
+        {
+            using var process = Process.GetProcessById(snapshot.Pid);
+            string name = process.ProcessName + ".exe";
+            return new ForegroundApp(snapshot.Pid, name, title);
+        }
+        catch
+        {
+            // Process exited between the foreground query and the lookup.
             return null;
         }
     }
