@@ -70,7 +70,11 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private void RefreshDevices()
+    /// <summary>
+    /// Re-enumerates output devices. Called when the window opens and when
+    /// the OS reports endpoint changes while the window is open.
+    /// </summary>
+    public void RefreshDevices()
     {
         _loading = true;
         try

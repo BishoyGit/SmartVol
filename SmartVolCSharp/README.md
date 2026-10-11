@@ -14,7 +14,9 @@ Hold **RIGHT CTRL** and press:
 
 An overlay shows the app icon, name, window title and volume level
 (or "System Volume" for the global control). A tray icon offers output-device
-switching, a hotkey repair action, settings and exit.
+switching, a hotkey repair action, settings and exit. The tray menu and the
+settings device list refresh automatically (debounced) when audio devices are
+connected, disconnected or changed.
 
 ## Run / build
 

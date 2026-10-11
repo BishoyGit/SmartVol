@@ -101,6 +101,8 @@ public sealed class TrayManager : IDisposable
         var previous = notify.ContextMenuStrip;
         notify.ContextMenuStrip = menu;
         previous?.Dispose();
+
+        AppLogger.Info($"Tray menu rebuilt ({visible.Count} visible of {devices.Count} devices)");
     }
 
     private void SwitchDevice(string id, string name)

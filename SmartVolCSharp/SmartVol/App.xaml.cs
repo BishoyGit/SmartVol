@@ -11,6 +11,7 @@ public partial class App : System.Windows.Application
 
     private Mutex? _mutex;
     private HotkeyService? _hotkeys;
+    private DeviceChangeWatcher? _deviceWatcher;
     private TrayManager? _tray;
     private OverlayWindow? _overlay;
     private SettingsWindow? _settings;
@@ -68,6 +69,14 @@ public partial class App : System.Windows.Application
             onFixHotkeys: () => Dispatcher.BeginInvoke(() => Safe(() => _hotkeys?.Restart(), "Hotkey restart failed")),
             onExit: () => Dispatcher.BeginInvoke(ShutdownApp));
         _tray.Start();
+
+        // Must be created on the UI thread (owns a DispatcherTimer).
+        _deviceWatcher = new DeviceChangeWatcher(() => Dispatcher.BeginInvoke(() =>
+        {
+            _tray?.RebuildMenu();
+            _settings?.RefreshDevices();
+        }));
+        _deviceWatcher.Start();
 
         if (e.Args.Contains("--show-settings", StringComparer.OrdinalIgnoreCase))
             Dispatcher.BeginInvoke(ShowSettings);
@@ -150,6 +159,7 @@ public partial class App : System.Windows.Application
     private void ShutdownApp()
     {
         Safe(() => _tray?.Dispose(), "Tray shutdown failed");
+        Safe(() => _deviceWatcher?.Dispose(), "Device watcher shutdown failed");
         Safe(() => _hotkeys?.Dispose(), "Hotkey shutdown failed");
         Safe(() => _overlay?.Close(), "Overlay shutdown failed");
 
