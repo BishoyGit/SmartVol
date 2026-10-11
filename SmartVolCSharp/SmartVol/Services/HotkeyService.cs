@@ -53,6 +53,7 @@ public sealed class HotkeyService : IDisposable
     private readonly object _keysLock = new();
     private Dictionary<int, List<HotkeyRule>> _rulesByKey = new();
     private bool _eitherSide;
+    private volatile bool _suspended;
     private HookProc? _proc;
     private IntPtr _hookId = IntPtr.Zero;
     private bool _disposed;
@@ -101,6 +102,25 @@ public sealed class HotkeyService : IDisposable
         }
 
         AppLogger.Info($"Hotkey bindings updated ({count} rules, either-side={(eitherSideModifiers ? "on" : "off")})");
+        foreach (var entry in map)
+        {
+            foreach (var logged in entry.Value)
+            {
+                AppLogger.Info($"  rule: {logged.Action} key=0x{logged.Key:X2} mods=[{string.Join(",", logged.Modifiers.Select(m => $"0x{m:X2}"))}]");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Temporarily stops hotkeys from firing (used while the user is
+    /// capturing a new combination in Settings, so half-pressed combos can't
+    /// trigger volume changes mid-capture). The hook stays installed and
+    /// modifier tracking continues, so resume is seamless.
+    /// </summary>
+    public void SetSuspended(bool suspended)
+    {
+        _suspended = suspended;
+        AppLogger.Info(suspended ? "Hotkeys suspended (capturing)" : "Hotkeys resumed");
     }
 
     public void Start()
@@ -194,7 +214,7 @@ public sealed class HotkeyService : IDisposable
                         _downModifiers.Remove(vk);
                 }
             }
-            else if (keyDown && _rulesByKey.TryGetValue(vk, out var rules))
+            else if (keyDown && !_suspended && _rulesByKey.TryGetValue(vk, out var rules))
             {
                 foreach (var rule in rules)
                 {

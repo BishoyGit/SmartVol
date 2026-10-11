@@ -147,7 +147,8 @@ public partial class App : System.Windows.Application
                 _tray?.RebuildMenu();
                 _hotkeys?.SetBindings(
                     HotkeyBindings.FromConfig(_config!), _config!.HotkeyEitherSideModifiers);
-            });
+            },
+            onCaptureStateChanged: suspended => _hotkeys?.SetSuspended(suspended));
         _settings.Closed += (_, _) => _settings = null;
         _settings.Show();
     }

@@ -46,6 +46,7 @@ public partial class SettingsWindow : Window
     private readonly AppConfig _config;
     private readonly AudioService _audio;
     private readonly Action _onChanged;
+    private readonly Action<bool> _onCaptureStateChanged;
     private readonly ObservableCollection<DeviceRow> _devices = new();
     private readonly Dictionary<string, HotkeyBinding> _pendingHotkeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<int> _captureMods = new();
@@ -53,12 +54,13 @@ public partial class SettingsWindow : Window
     private bool _pendingEitherSide;
     private string? _captureAction;
 
-    public SettingsWindow(ConfigService configService, AppConfig config, AudioService audio, Action onChanged)
+    public SettingsWindow(ConfigService configService, AppConfig config, AudioService audio, Action onChanged, Action<bool> onCaptureStateChanged)
     {
         _configService = configService;
         _config = config;
         _audio = audio;
         _onChanged = onChanged;
+        _onCaptureStateChanged = onCaptureStateChanged;
 
         InitializeComponent();
         DeviceList.ItemsSource = _devices;
@@ -184,6 +186,35 @@ public partial class SettingsWindow : Window
     {
         _captureAction = action;
         _captureMods.Clear();
+
+        // Seed modifiers already held down (e.g. user holds Ctrl with one
+        // hand and clicks Change with the other). Without this, a pre-held
+        // modifier would be silently dropped and the stored combo would be
+        // wrong (e.g. bare "←" instead of "Ctrl + ←").
+        foreach (var (key, vk) in new[]
+                 {
+                     (Key.LeftCtrl, HotkeyBindings.VkLcontrol),
+                     (Key.RightCtrl, HotkeyBindings.VkRcontrol),
+                     (Key.LeftShift, HotkeyBindings.VkLshift),
+                     (Key.RightShift, HotkeyBindings.VkRshift),
+                     (Key.LeftAlt, HotkeyBindings.VkLmenu),
+                     (Key.RightAlt, HotkeyBindings.VkRmenu),
+                     (Key.LWin, HotkeyBindings.VkLwin),
+                     (Key.RWin, HotkeyBindings.VkRwin),
+                 })
+        {
+            try
+            {
+                if (Keyboard.IsKeyDown(key))
+                    _captureMods.Add(vk);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Capture modifier seed failed", ex);
+            }
+        }
+
+        SafeSetSuspended(true);
         UpdateHotkeyButtons();
     }
 
@@ -191,7 +222,27 @@ public partial class SettingsWindow : Window
     {
         _captureAction = null;
         _captureMods.Clear();
+        SafeSetSuspended(false);
         UpdateHotkeyButtons();
+    }
+
+    private void SafeSetSuspended(bool suspended)
+    {
+        try
+        {
+            _onCaptureStateChanged(suspended);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("Capture suspend toggle failed", ex);
+        }
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        // Never leave hotkeys suspended if the window is closed mid-capture.
+        SafeSetSuspended(false);
+        base.OnClosed(e);
     }
 
     private void OnCaptureKeyDown(object sender, KeyEventArgs e)
