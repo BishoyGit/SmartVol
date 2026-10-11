@@ -1,0 +1,74 @@
+<Window x:Class="SmartVol.UI.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SmartVol" Width="400" Height="142"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        Topmost="True" ShowInTaskbar="False" ShowActivated="False" Focusable="False"
+        ResizeMode="NoResize" Visibility="Hidden">
+    <Border CornerRadius="18" Padding="18,14" BorderThickness="1" BorderBrush="#3F3F46">
+        <Border.Background>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                <GradientStop Color="#2C2C31" Offset="0"/>
+                <GradientStop Color="#1B1B1E" Offset="1"/>
+            </LinearGradientBrush>
+        </Border.Background>
+        <Border.Effect>
+            <DropShadowEffect Color="Black" Opacity="0.55" BlurRadius="26" ShadowDepth="6" Direction="270"/>
+        </Border.Effect>
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- App icon tile -->
+            <Border Grid.Row="0" Grid.RowSpan="2" Grid.Column="0"
+                    Width="54" Height="54" CornerRadius="14"
+                    Background="#343439" Margin="0,0,14,0"
+                    VerticalAlignment="Center">
+                <Image x:Name="AppIconImg" Width="40" Height="40"
+                       Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"/>
+            </Border>
+
+            <!-- App / device name -->
+            <TextBlock x:Name="AppNameText" Grid.Row="0" Grid.Column="1"
+                       Text="Unknown app" FontSize="15" FontWeight="SemiBold"
+                       Foreground="White" TextTrimming="CharacterEllipsis"
+                       VerticalAlignment="Bottom" Margin="0,0,8,1"/>
+
+            <!-- Percentage -->
+            <TextBlock x:Name="PercentText" Grid.Row="0" Grid.Column="2"
+                       Text="50%" FontSize="22" FontWeight="Bold"
+                       Foreground="White" HorizontalAlignment="Right"
+                       VerticalAlignment="Bottom" MinWidth="64" TextAlignment="Right"/>
+
+            <!-- Window title / status -->
+            <TextBlock x:Name="SubtitleText" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"
+                       Text="Per-app volume" FontSize="12" Foreground="#A1A1AA"
+                       TextTrimming="CharacterEllipsis" Margin="0,2,0,0"/>
+
+            <!-- Volume bar -->
+            <Border x:Name="ProgressTrack" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3"
+                    Height="8" CornerRadius="4" Background="#3A3A40" Margin="0,12,0,0">
+                <Border x:Name="VolumeFill" Height="8" CornerRadius="4"
+                        HorizontalAlignment="Left" Width="160">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                            <GradientStop Color="#34D399" Offset="0"/>
+                            <GradientStop Color="#10B981" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Border.Background>
+                    <Border.Effect>
+                        <DropShadowEffect Color="#10B981" Opacity="0.45" BlurRadius="8" ShadowDepth="0"/>
+                    </Border.Effect>
+                </Border>
+            </Border>
+        </Grid>
+    </Border>
+</Window>
